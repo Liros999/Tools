@@ -18,12 +18,119 @@ from tqdm import tqdm
 from intervaltree import Interval, IntervalTree
 
 # Conditional imports for optional performance optimizations
-try:
-    import pyahocorasick
-    PYAHCORASICK_AVAILABLE = True
-except ImportError:
-    pyahocorasick = None
-    PYAHCORASICK_AVAILABLE = False
+# PURE PYTHON IMPLEMENTATION: Aho-Corasick algorithm without external dependencies
+PYAHCORASICK_AVAILABLE = True  # We now have our own implementation
+
+# Global annotation cache to prevent reloading GTF files
+_GLOBAL_ANNOTATION_CACHE = {}
+_GTF_CACHE_LOCK = threading.Lock()
+
+# Pure Python Aho-Corasick implementation
+class AhoCorasickNode:
+    """Node in the Aho-Corasick trie."""
+    def __init__(self):
+        self.children = {}
+        self.fail = None
+        self.output = []
+        self.is_end = False
+
+class PurePythonAhoCorasick:
+    """Pure Python implementation of Aho-Corasick algorithm."""
+    
+    def __init__(self):
+        self.root = AhoCorasickNode()
+        self.is_built = False
+    
+    def add_word(self, word, value=None):
+        """Add a word to the trie."""
+        if value is None:
+            value = word
+        
+        node = self.root
+        for char in word:
+            if char not in node.children:
+                node.children[char] = AhoCorasickNode()
+            node = node.children[char]
+        
+        node.is_end = True
+        node.output.append(value)
+    
+    def make_automaton(self):
+        """Build the failure links for the automaton."""
+        if self.is_built:
+            return
+        
+        # BFS to build failure links
+        queue = []
+        for char, child in self.root.children.items():
+            child.fail = self.root
+            queue.append(child)
+        
+        while queue:
+            current = queue.pop(0)
+            
+            for char, child in current.children.items():
+                queue.append(child)
+                
+                # Find failure link
+                failure = current.fail
+                while failure and char not in failure.children:
+                    failure = failure.fail
+                
+                child.fail = failure.children.get(char, self.root) if failure else self.root
+                
+                # Merge outputs
+                child.output.extend(child.fail.output)
+        
+        self.is_built = True
+    
+    def iter(self, text):
+        """Iterate over all matches in the text."""
+        if not self.is_built:
+            self.make_automaton()
+        
+        node = self.root
+        for i, char in enumerate(text):
+            # Follow failure links until we find a match or reach root
+            while node and char not in node.children:
+                node = node.fail
+            
+            if not node:
+                node = self.root
+                continue
+            
+            node = node.children[char]
+            
+            # Yield all outputs at this position
+            for output in node.output:
+                yield i, output
+
+# Create a global instance
+_pure_ahocorasick = PurePythonAhoCorasick()
+
+# Monkey patch to provide the same interface as pyahocorasick
+class Automaton:
+    """Drop-in replacement for pyahocorasick.Automaton."""
+    
+    def __init__(self):
+        self._automaton = PurePythonAhoCorasick()
+    
+    def add_word(self, word, value=None):
+        """Add a word to the automaton."""
+        self._automaton.add_word(word, value)
+    
+    def make_automaton(self):
+        """Build the automaton."""
+        self._automaton.make_automaton()
+    
+    def iter(self, text):
+        """Iterate over matches in the text."""
+        return self._automaton.iter(text)
+
+# Replace the import
+pyahocorasick = type('pyahocorasick', (), {
+    'Automaton': Automaton
+})
 
 try:
     from Levenshtein import distance
@@ -36,6 +143,149 @@ except ImportError:
 class GenomeAnalysisError(Exception):
     """Custom exception for genome analysis errors."""
     pass
+
+def create_shared_gtf_cache(gtf_path: str) -> str:
+    """
+    Create a shared cache file for GTF annotations that can be used across processes.
+    This eliminates the need to reload GTF for each worker.
+    
+    Args:
+        gtf_path: Path to the GTF annotation file
+        
+    Returns:
+        Path to the cache file
+    """
+    import os  # Import os for file operations
+    import hashlib
+    
+    # Create cache filename based on GTF file path and modification time
+    gtf_stat = os.stat(gtf_path)
+    cache_key = f"{gtf_path}_{gtf_stat.st_mtime}_{gtf_stat.st_size}"
+    cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
+    
+    cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    cache_file = os.path.join(cache_dir, f"gtf_cache_{cache_hash}.pkl")
+    
+    # Check if cache already exists and is newer than source
+    if os.path.exists(cache_file):
+        if os.path.getmtime(cache_file) > gtf_stat.st_mtime:
+            print(f"[INFO] Using existing GTF cache: {cache_file}")
+            return cache_file
+    
+    print(f"[INFO] Creating shared GTF cache from {gtf_path} (one-time operation)...")
+    start_time = time.time()
+    
+    # Parse GTF file once
+    chromosome_annotations = {}
+    
+    try:
+        with open(gtf_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if not line or line.startswith('#'):
+                    continue
+                
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) < 9:
+                    continue
+                
+                seqid, source, feature_type, start_str, end_str, score, strand, phase, attributes = parts
+                
+                # Skip if not a gene or CDS
+                if feature_type not in ('gene', 'CDS'):
+                    continue
+                
+                try:
+                    start = int(start_str)
+                    end = int(end_str)
+                except ValueError:
+                    continue
+                
+                # Extract gene name from attributes
+                gene_name = None
+                for attr in attributes.split(';'):
+                    attr = attr.strip()
+                    if not attr:
+                        continue
+                    if attr.startswith('gene_name'):
+                        gene_name = attr.split(' ', 1)[1].strip().strip('"')
+                        break
+                    if attr.startswith('gene_id') and gene_name is None:
+                        gene_name = attr.split(' ', 1)[1].strip().strip('"')
+                
+                if not gene_name:
+                    gene_name = f"gene_{start}_{end}"
+                
+                # Initialize chromosome if not exists
+                if seqid not in chromosome_annotations:
+                    chromosome_annotations[seqid] = {'genes': [], 'cds': []}
+                
+                # Add annotation based on type
+                if feature_type == 'gene':
+                    gene = {
+                        'name': gene_name,
+                        'locus_tag': gene_name,
+                        'start': min(start, end),
+                        'end': max(start, end),
+                        'strand': strand if strand in ['+', '-'] else '+',
+                        'type': 'gene'
+                    }
+                    chromosome_annotations[seqid]['genes'].append(gene)
+                elif feature_type == 'CDS':
+                    cds = {
+                        'name': gene_name,
+                        'start': min(start, end),
+                        'end': max(start, end),
+                        'strand': strand if strand in ['+', '-'] else '+',
+                        'type': 'cds'
+                    }
+                    chromosome_annotations[seqid]['cds'].append(cds)
+    
+    except FileNotFoundError:
+        raise GenomeAnalysisError(f"GTF file not found at {gtf_path}")
+    except Exception as e:
+        raise GenomeAnalysisError(f"An error occurred loading GTF annotations: {e}")
+    
+    # Save to cache file
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(chromosome_annotations, f)
+    except Exception as e:
+        raise GenomeAnalysisError(f"Failed to save GTF cache: {e}")
+    
+    elapsed_time = time.time() - start_time
+    total_genes = sum(len(data['genes']) for data in chromosome_annotations.values())
+    total_cds = sum(len(data['cds']) for data in chromosome_annotations.values())
+    
+    print(f"[INFO] Successfully created shared cache: {total_genes} genes and {total_cds} CDS across {len(chromosome_annotations)} chromosomes in {elapsed_time:.2f}s")
+    print(f"[INFO] Cache saved to: {cache_file}")
+    
+    return cache_file
+
+def load_annotations_from_shared_cache(cache_file: str, chromosome: str) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Load annotations for a specific chromosome from the shared cache file.
+    
+    Args:
+        cache_file: Path to the shared cache file
+        chromosome: Chromosome name to retrieve
+        
+    Returns:
+        Tuple of (genes, cds) for the specified chromosome
+    """
+    try:
+        with open(cache_file, 'rb') as f:
+            chromosome_annotations = pickle.load(f)
+        
+        chromosome_data = chromosome_annotations.get(chromosome, {'genes': [], 'cds': []})
+        return chromosome_data['genes'], chromosome_data['cds']
+        
+    except Exception as e:
+        print(f"[WARNING] Failed to load from cache {cache_file}: {e}")
+        return [], []
+
+# Legacy function removed - replaced by shared cache system
 
 # ============================================================================
 # ENHANCED LIVE OUTPUT & DASHBOARD COMMUNICATION CLASSES
@@ -238,14 +488,14 @@ class DashboardCommunicator:
         """Check if dashboard is available for communication."""
         return self.command_queue is not None
         
-    def update_worker(self, worker_id: str, status: str, progress: int, details: str = ""):
+    def update_worker(self, worker_id: int, status: str, progress: int, details: str = ""):
         """Send worker update to dashboard."""
         if not self.is_available():
             return
             
         try:
             message = {
-                'worker_id': str(worker_id),
+                'worker_id': worker_id,  # Keep as integer
                 'status': status,
                 'progress': max(0, min(100, progress)),
                 'details': str(details)[:50],  # Limit detail length
@@ -295,6 +545,22 @@ class DashboardCommunicator:
             
         except Exception as e:
             print(f"[DEBUG] Dashboard search info failed: {e}")
+    
+    def send_sequence_info(self, filename: str, total_sequences: int):
+        """Send sequence file information to dashboard."""
+        if not self.is_available():
+            return
+            
+        try:
+            sequence_info = {
+                'sequence_file': filename,
+                'total_sequences': total_sequences
+            }
+            
+            self.command_queue.put(("SEQUENCE_UPDATE", sequence_info), timeout=0.1)
+            
+        except Exception as e:
+            print(f"[DEBUG] Dashboard sequence info failed: {e}")
 
 # Global frame width for pretty output
 FRAME_WIDTH: int = 0
@@ -366,7 +632,7 @@ def _process_search_results(matches: List[Tuple], pattern: str, strand: str,
     Returns processed results list.
     """
     processed_results = []
-    for start, end, window, _, _, mismatches in matches:
+    for start, end, window, _, mismatches, _ in matches:
         location = analyzer.get_location_details(start, end)
         
         # Apply boundary annotations if specified
@@ -394,16 +660,9 @@ def _process_search_results(matches: List[Tuple], pattern: str, strand: str,
     
     return processed_results
 
-def _initialize_worker_process():
-    """
-    Initialize worker process - runs once per worker.
-    Pre-loads modules and creates analyzer instance.
-    """
-    global worker_analyzer
-    worker_analyzer = EColiAnalyzer()
-    print(f"[DEBUG] Worker initialized (PID: {os.getpid()})")
+# Worker initialization function removed - not needed for multiprocessing
 
-def _get_global_process_pool(worker_count=None, use_initializer=True):
+def _get_global_process_pool(worker_count=None):
     """Get or create a global process pool with worker pre-initialization."""
     global _global_process_pool, _global_process_pool_workers, _global_process_pool_initialized
     
@@ -424,14 +683,8 @@ def _get_global_process_pool(worker_count=None, use_initializer=True):
         
         print(f"[INFO] Creating global process pool with {worker_count} workers")
         
-        if use_initializer:
-            print(f"[INFO] Using worker pre-initialization for optimal performance")
-            _global_process_pool = ProcessPoolExecutor(
-                max_workers=worker_count,
-                initializer=_initialize_worker_process
-            )
-        else:
-            _global_process_pool = ProcessPoolExecutor(max_workers=worker_count)
+        # Create process pool without pre-initialization (multiprocessing-safe)
+        _global_process_pool = ProcessPoolExecutor(max_workers=worker_count)
         
         _global_process_pool_workers = worker_count
         _global_process_pool_initialized = True
@@ -530,6 +783,87 @@ class EColiAnalyzer:
             matches.append((start_pos + 1, end_index + 1, pattern, False, 0, 0))
         
         return matches
+    
+    def _search_enhanced_exact_with_iupac(self, text: str, pattern: str) -> List[Tuple]:
+        """
+        Enhanced exact search using Aho-Corasick algorithm with IUPAC code support.
+        This handles ambiguous nucleotides by expanding them into all possible concrete sequences.
+        """
+        if not PYAHCORASICK_AVAILABLE:
+            raise GenomeAnalysisError("pyahocorasick is required for enhanced exact search. Install: pip install pyahocorasick")
+        
+        matches = []
+        
+        # Generate all possible concrete sequences from IUPAC codes
+        concrete_patterns = self._expand_iupac_pattern(pattern)
+        
+        # Build Aho-Corasick automaton for all concrete patterns
+        automaton = pyahocorasick.Automaton()
+        for concrete_pattern in concrete_patterns:
+            automaton.add_word(concrete_pattern, concrete_pattern)
+        automaton.make_automaton()
+        
+        # Search using the automaton
+        for end_index, found_pattern in automaton.iter(text):
+            start_index = end_index - len(found_pattern) + 1
+            # Return format: (start, end, pattern, False, 0, 0) to match expected 6-element format
+            matches.append((start_index + 1, end_index + 1, pattern, False, 0, 0))
+        
+        return matches
+    
+    def _expand_iupac_pattern(self, pattern: str) -> List[str]:
+        """
+        Expand IUPAC ambiguity codes into all possible concrete sequences.
+        IUPAC codes: R=AG, Y=CT, S=GC, W=AT, K=GT, M=AC, B=CGT, D=AGT, H=ACT, V=ACG, N=ACGT
+        """
+        iupac_expansions = {
+            'A': ['A'], 'C': ['C'], 'G': ['G'], 'T': ['T'],
+            'R': ['A', 'G'],      # Purine
+            'Y': ['C', 'T'],      # Pyrimidine
+            'S': ['G', 'C'],      # Strong (3 H-bonds)
+            'W': ['A', 'T'],      # Weak (2 H-bonds)
+            'K': ['G', 'T'],      # Keto
+            'M': ['A', 'C'],      # Amino
+            'B': ['C', 'G', 'T'], # Not A
+            'D': ['A', 'G', 'T'], # Not C
+            'H': ['A', 'C', 'T'], # Not G
+            'V': ['A', 'C', 'G'], # Not T
+            'N': ['A', 'C', 'G', 'T']  # Any nucleotide
+        }
+        
+        # Start with empty string
+        sequences = ['']
+        
+        # For each character in the pattern, expand all possibilities
+        for char in pattern.upper():
+            if char in iupac_expansions:
+                # Expand current sequences with all possible values for this character
+                new_sequences = []
+                for seq in sequences:
+                    for nucleotide in iupac_expansions[char]:
+                        new_sequences.append(seq + nucleotide)
+                sequences = new_sequences
+            else:
+                # Unknown character, treat as literal
+                sequences = [seq + char for seq in sequences]
+        
+        return sequences
+    
+    def _contains_iupac_codes(self, pattern: str) -> bool:
+        """
+        Check if a pattern contains IUPAC ambiguity codes.
+        """
+        iupac_chars = set('RYSMKWBDHVN')
+        return any(char.upper() in iupac_chars for char in pattern)
+    
+    def _smart_exact_search(self, text: str, pattern: str) -> List[Tuple]:
+        """
+        Smart exact search that automatically chooses between standard and IUPAC-enhanced search.
+        """
+        if self._contains_iupac_codes(pattern):
+            return self._search_enhanced_exact_with_iupac(text, pattern)
+        else:
+            return self._search_optimized_exact(text, pattern)
     
     def _search_optimized_mismatch(self, text: str, pattern: str, max_mismatches: int) -> List[Tuple]:
         """
@@ -664,6 +998,7 @@ class EColiAnalyzer:
             _handle_file_error(e, filename, "loading annotations")
 
     def load_annotations_from_bsub_json(self, json_path: str):
+        import os
         print(f"Loading Bacillus subtilis annotations from {os.path.basename(json_path)}...")
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -826,78 +1161,32 @@ class EColiAnalyzer:
         pattern = pattern.upper()
         seq = self.sequence
         seq_len = len(seq)
-        # Boundary annotation logic moved to centralized _process_search_results function
+                # Boundary annotation logic moved to centralized _process_search_results function
         if max_mismatches == 0:
-            if worker_line > 0:
-                print(f"\033[{worker_line};0H\033[K[WORKER] Mode: Ultra-Fast Exact Search (0 mismatches) | Pattern: {pattern} | Length: {seq_len:,} bp")
-            else:
-                print(f"\n[INFO] Mode: Ultra-Fast Exact Search (0 mismatches, Aho-Corasick algorithm)")
-                print(f"[INFO] Pattern: {pattern} | Sequence length: {seq_len:,} bp")
-            
-            # Print header first if streaming
-            if (stream or on_row):
-                if on_header:
-                    on_header()
-                elif stream:
-                    _print_results_header(include_chrom)
-            
-            # Search forward strand using Aho-Corasick (orders of magnitude faster than regex)
-            if worker_line > 0:
-                print(f"\033[{worker_line};0H\033[K[WORKER] Searching forward strand with Aho-Corasick algorithm...")
-            else:
-                print(f"[INFO] Searching forward strand with Aho-Corasick algorithm...")
-            
-            forward_matches = self._search_optimized_exact(seq, pattern)
+            # Search forward strand using smart Aho-Corasick (automatically handles IUPAC codes)
+            forward_matches = self._smart_exact_search(seq, pattern)
             matches.extend(_process_search_results(forward_matches, pattern, '+', self, boundary_bp, on_row, stream, include_chrom))
             
-            # Search reverse strand using Aho-Corasick
+            # Search reverse strand using smart Aho-Corasick
             rev_pattern = self._reverse_complement(pattern)
             if rev_pattern != pattern:
-                if worker_line > 0:
-                    _print_worker_progress(worker_line, "Searching reverse complement strand with Aho-Corasick...")
-                else:
-                    print(f"[INFO] Searching reverse complement strand with Aho-Corasick algorithm...")
-                
-                reverse_matches = self._search_optimized_exact(seq, rev_pattern)
+                reverse_matches = self._smart_exact_search(seq, rev_pattern)
                 matches.extend(_process_search_results(reverse_matches, pattern, '-', self, boundary_bp, on_row, stream, include_chrom))
         else:
             # --- HIGH-PERFORMANCE MISMATCH SEARCH (OPTIMIZED ALGORITHMS) ---
-            if worker_line > 0:
-                print(f"\033[{worker_line};0H\033[K[WORKER] Mode: Mismatch-Tolerant Search (up to {max_mismatches} mismatches)")
-                print(f"\033[{worker_line+1};0H\033[K[WORKER] Using Optimized Myers Bit-Vector Algorithm | Pattern: {pattern} | Length: {seq_len:,} bp")
-            else:
-                print(f"\n[INFO] Mode: Mismatch-Tolerant Search (up to {max_mismatches} mismatches)")
-                print(f"[INFO] Using optimized Myers bit-vector algorithm for optimal performance.")
-                print(f"[INFO] Pattern: {pattern} | Sequence length: {seq_len:,} bp")
-
             matches = []
             rev_pattern = self._reverse_complement(pattern)
 
             # --- FORWARD STRAND SEARCH ---
-            if worker_line > 0:
-                _print_worker_progress(worker_line, "Searching forward strand with optimized algorithm...")
-            else:
-                print("[INFO] Searching forward strand with optimized algorithm...")
-            
             # Use optimized mismatch search (orders of magnitude faster than flawed Bitap)
             forward_matches = self._search_optimized_mismatch(seq, pattern, max_mismatches)
             matches.extend(_process_search_results(forward_matches, pattern, '+', self, boundary_bp, on_row, stream, include_chrom))
 
             # --- REVERSE STRAND SEARCH ---
             if rev_pattern != pattern:
-                if worker_line > 0:
-                    _print_worker_progress(worker_line, "Searching reverse complement strand with optimized algorithm...")
-                else:
-                    print("[INFO] Searching reverse complement strand with optimized algorithm...")
-                
                 # Use optimized mismatch search for reverse strand
                 reverse_matches = self._search_optimized_mismatch(seq, rev_pattern, max_mismatches)
                 matches.extend(_process_search_results(reverse_matches, pattern, '-', self, boundary_bp, on_row, stream, include_chrom))
-
-            if worker_line > 0:
-                print(f"\033[{worker_line};0H\033[K[WORKER] Optimized search completed. Found {len(matches)} potential matches.")
-            else:
-                print(f"\n[INFO] Optimized search completed. Found {len(matches)} potential matches.")
         unique_matches = list({(m[0], m[1]): m for m in matches}.values())
         unique_matches.sort(key=lambda x: x[0])
         return unique_matches
@@ -1027,12 +1316,14 @@ def _prompt_numeric_choice(options: List[str], title: str) -> int:
         raise GenomeAnalysisError("Operation cancelled by user")
 
 def _list_subdirectories(path: str) -> List[str]:
+    import os  # Import os for file operations
     try:
         return [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
     except Exception:
         return []
 
 def _list_files_with_ext(path: str, exts: Tuple[str, ...]) -> List[str]:
+    import os  # Import os for file operations
     files = []
     try:
         for name in os.listdir(path):
@@ -1111,6 +1402,7 @@ def _filter_human_chromosomes(chroms: List[str], fasta_path: str) -> List[str]:
     return [c for c in chroms if c in allowed]
 
 def _navigator_select_inputs(data_dir: str) -> Tuple[str, str, str, Optional[str]]:
+    import os  # Import os for file operations
     while True:
         # Species selection by navigating subfolders under data_dir
         species_dirs = _list_subdirectories(data_dir)
@@ -1208,34 +1500,47 @@ def enhanced_search_single_chromosome_worker(chromosome: str, fasta_path: str, g
     """Enhanced worker function with proper progress reporting and result validation."""
     
     try:
-        # Use pre-initialized analyzer
-        if 'worker_analyzer' in globals():
-            analyzer = worker_analyzer
-            analyzer.sequence = ""
-            analyzer.gene_data = {}
-            analyzer.gene_tree = IntervalTree()
-            analyzer.cds_tree = IntervalTree()
-        else:
-            raise Exception("Worker pre-initialization required")
+        # Create new analyzer instance for this worker (multiprocessing-safe)
+        analyzer = EColiAnalyzer()
         
-        # Memory monitoring
-        print(f"[INFO] Worker {chromosome}: Starting chromosome processing")
+        # Worker status will be updated by main process after completion
+        pass
         
-        # Load sequence with progress reporting
-        print(f"[INFO] Worker {chromosome}: Loading sequence data...")
+        # Minimal worker status - dashboard handles detailed progress
+        print(f"[WORKER] {chromosome}: Started")
+        
+        # Load sequence and annotations silently
         sequence = load_genome_for_chromosome(fasta_path, chromosome, use_memory_mapping=True)
         analyzer.sequence = sequence
-        
-        print(f"[INFO] Worker {chromosome}: Loading annotations...")
         analyzer.current_chromosome = chromosome
-        analyzer.load_annotations_from_gtf(gtf_path, chromosome)
         
-        # Perform search with progress
-        print(f"[INFO] Worker {chromosome}: Starting pattern search for '{pattern}'")
-        print(f"[INFO] Worker {chromosome}: Sequence length: {len(sequence):,} bp")
+        # Processing status will be updated by main process
+        pass
         
-        # Execute search
-        results = analyzer.search_sequence(pattern, max_mismatches, boundary_bp, stream=True)
+        # Load annotations from shared cache if available, otherwise from GTF
+        # Use the same cache path logic as the main function
+        import hashlib
+        import os
+        gtf_stat = os.stat(gtf_path)
+        cache_key = f"{gtf_path}_{gtf_stat.st_mtime}_{gtf_stat.st_size}"
+        cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
+        cache_dir = os.path.join(os.path.dirname(__file__), "cache")  # Same as main function
+        cache_file = os.path.join(cache_dir, f"gtf_cache_{cache_hash}.pkl")
+        
+        if os.path.exists(cache_file):
+            genes, cds = load_annotations_from_shared_cache(cache_file, chromosome)
+            analyzer._build_gene_tree_with_intergenic(genes)
+            for cds_item in cds:
+                analyzer.cds_tree[cds_item['start']:cds_item['end'] + 1] = cds_item
+        else:
+            # Fallback to loading from GTF
+            analyzer.load_annotations_from_gtf(gtf_path, chromosome)
+        
+        # Search status will be updated by main process
+        pass
+        
+        # Execute search silently - dashboard shows progress
+        results = analyzer.search_sequence(pattern, max_mismatches, boundary_bp, stream=False)
         
         # Validate results
         valid_results = []
@@ -1243,7 +1548,10 @@ def enhanced_search_single_chromosome_worker(chromosome: str, fasta_path: str, g
             if isinstance(result, (tuple, list)) and len(result) >= 8:
                 valid_results.append(result)
         
-        print(f"[INFO] Worker {chromosome}: Search completed - {len(valid_results)} valid matches found")
+        # Completion status will be updated by main process
+        pass
+        
+        print(f"[WORKER] {chromosome}: Completed ({len(valid_results)} matches)")
         
         return True, chromosome, valid_results
         
@@ -1251,12 +1559,7 @@ def enhanced_search_single_chromosome_worker(chromosome: str, fasta_path: str, g
         print(f"[ERROR] Worker {chromosome}: {str(e)}")
         return False, chromosome, []
 
-# Keep the old function for backward compatibility during transition
-def _search_single_chromosome_worker(chromosome: str, fasta_path: str, gtf_path: str, 
-                                   pattern: str, max_mismatches: int, boundary_bp: int, worker_line: int = 0) -> Tuple[bool, str, List]:
-    """Legacy worker function - now calls enhanced version."""
-    return enhanced_search_single_chromosome_worker(chromosome, fasta_path, gtf_path, 
-                                                  pattern, max_mismatches, boundary_bp, 0)
+# Legacy function removed - no longer needed
 
 def _search_genome_chunk_worker(analyzer: EColiAnalyzer, start: int, end: int, 
                                pattern: str, max_mismatches: int, boundary_bp: int) -> List:
@@ -1294,6 +1597,7 @@ class MemoryMappedGenomeLoader:
     """
     
     def __init__(self, cache_dir: str = None, max_cache_size_mb: int = 1024):
+        import os  # Import os for file operations
         self.cache_dir = cache_dir or os.path.join(os.path.dirname(__file__), "cache")
         self.max_cache_size_mb = max_cache_size_mb
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -1313,7 +1617,7 @@ class MemoryMappedGenomeLoader:
         # Check if cache already exists and is newer than source
         if os.path.exists(cache_file):
             if os.path.getmtime(cache_file) > os.path.getmtime(fasta_path):
-                print(f"[INFO] Using existing raw sequence cache for {chromosome}")
+                # Silent cache operations
                 return cache_file
         
         # Check if another process is currently creating this cache
@@ -1322,10 +1626,10 @@ class MemoryMappedGenomeLoader:
             # Wait a bit and check if cache was created
             time.sleep(0.5)
             if os.path.exists(cache_file):
-                print(f"[INFO] Cache file created by another process for {chromosome}, using it")
+                print(f"[DEBUG] Cache: {chromosome} (shared)")
                 return cache_file
         
-        print(f"[INFO] Creating raw sequence cache for {chromosome}")
+        # Silent cache creation
         
         # Add file locking to prevent race conditions
         lock_file = cache_file + ".lock"
@@ -1342,21 +1646,21 @@ class MemoryMappedGenomeLoader:
                 if attempt < max_retries - 1:
                     # Check if cache file was created by another process while waiting
                     if os.path.exists(cache_file):
-                        print(f"[INFO] Cache file created by another process for {chromosome}, using it")
+                        # Silent cache sharing
                         return cache_file
                     
-                    print(f"[INFO] Cache file being created by another process, waiting... (attempt {attempt + 1})")
+                    # Silent cache waiting
                     time.sleep(retry_delay)
                     continue
                 else:
                     # Final attempt - check if cache file exists
                     if os.path.exists(cache_file):
-                        print(f"[INFO] Using cache file created by another process for {chromosome}")
+                        # Silent cache sharing
                         return cache_file
                     else:
                         # Try one more time to create the cache file directly
                         try:
-                            print(f"[INFO] Final attempt to create cache for {chromosome}")
+                            # Silent final attempt
                             return self._create_cache_directly(fasta_path, chromosome, cache_file)
                         except Exception as e:
                             raise GenomeAnalysisError(f"Could not create cache file for {chromosome}: {e}")
@@ -1372,7 +1676,7 @@ class MemoryMappedGenomeLoader:
         try:
             if os.path.exists(lock_file):
                 os.remove(lock_file)
-                print(f"[INFO] Lock file removed for {chromosome}")
+                # Silent lock removal
         except Exception as e:
             print(f"[WARNING] Failed to remove lock file: {e}")
         
@@ -1380,10 +1684,17 @@ class MemoryMappedGenomeLoader:
     
     def _create_cache_directly(self, fasta_path: str, chromosome: str, cache_file: str) -> str:
         """Create cache file directly without locking (final attempt only)."""
-        print(f"[INFO] Creating cache directly for {chromosome} (final attempt)")
+        # Silent direct cache creation
         
-        # Reuse the main cache creation logic to eliminate duplication
-        return self._extract_sequence_to_cache(fasta_path, chromosome, cache_file)
+        # Extract sequence and write to cache file
+        raw_sequence = self._extract_sequence_to_cache(fasta_path, chromosome, cache_file)
+        
+        # Write the sequence to the cache file
+        with open(cache_file, 'w') as f:
+            f.write(raw_sequence)
+        
+        # Return the cache file path, not the sequence content
+        return cache_file
     
     def _extract_sequence_to_cache(self, fasta_path: str, chromosome: str, cache_file: str) -> str:
         """Centralized sequence extraction logic to eliminate code duplication."""
@@ -1411,18 +1722,16 @@ class MemoryMappedGenomeLoader:
         Load sequence using memory mapping for efficient access.
         Returns sequence as string or bytes object.
         """
-        print(f"[INFO] Loading sequence using memory mapping: {os.path.basename(cache_file)}")
-        
         file_size = os.path.getsize(cache_file)
         
         # Use memory mapping for files larger than threshold (consistent with main threshold)
         if file_size > MEMORY_MAPPING_THRESHOLD_BYTES:
-            print(f"[INFO] Using memory mapping for large file ({file_size / (1024*1024):.1f} MB)")
+            # Silent memory mapping
             with open(cache_file, 'rb') as f:
                 with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                     return mm.read().decode('utf-8')
         else:
-            print(f"[INFO] Using standard file I/O for small file ({file_size / (1024*1024):.1f} MB)")
+            # Silent standard I/O
             with open(cache_file, 'r') as f:
                 return f.read()
     
@@ -1449,7 +1758,7 @@ class MemoryMappedGenomeLoader:
                     break
                 os.remove(filepath)
                 total_size -= size
-                print(f"[INFO] Removed old cache file: {os.path.basename(filepath)}")
+                # Silent cache cleanup
         except Exception as e:
             print(f"[WARNING] Cache cleanup failed: {e}")
 
@@ -1458,21 +1767,21 @@ def load_genome_for_chromosome(fasta_path: str, chromosome: str, use_memory_mapp
     Load genome sequence for a chromosome, optionally using memory mapping.
     Returns the sequence as a string.
     """
+    import os  # Import os for file operations
     file_size = os.path.getsize(fasta_path)
     
     # OPTIMIZED THRESHOLD: Use memory mapping for files above threshold
     if use_memory_mapping and file_size > MEMORY_MAPPING_THRESHOLD_BYTES:
-        print(f"[INFO] Large sequence detected ({file_size / (1024*1024):.1f} MB), using memory mapping")
+        # Silent memory mapping for large sequences
         try:
             loader = MemoryMappedGenomeLoader()
             cache_file = loader.create_raw_sequence_cache(fasta_path, chromosome)
             sequence = loader.load_sequence_memory_mapped(cache_file)
-            print(f"[INFO] Memory mapped loading completed: {len(sequence):,} bp")
             return sequence
         except Exception as e:
             raise GenomeAnalysisError(f"Memory mapping failed: {e}. Check file permissions and disk space.")
     else:
-        print(f"[INFO] Using standard loading for sequence ({file_size / (1024*1024):.1f} MB)")
+        # Silent standard loading
         # Use existing chromosome loading logic
         analyzer = EColiAnalyzer()
         analyzer.load_chromosome_sequence(fasta_path, chromosome)
@@ -1481,29 +1790,34 @@ def load_genome_for_chromosome(fasta_path: str, chromosome: str, use_memory_mapp
 def enhanced_parallel_chromosome_search(chromosomes: List[str], fasta_path: str, gtf_path: str,
                                        pattern: str, max_mismatches: int, boundary_bp: int, 
                                        command_queue: Optional[multiprocessing.Queue] = None) -> List:
-    """Enhanced parallel search with proper live output and dashboard communication."""
+    """Enhanced parallel search with results sent to dashboard instead of terminal."""
+    import os  # Import os for file operations
     
-    # Initialize components
-    output_manager = LiveOutputManager()
-    table_formatter = TableFormatter()
+    # Initialize dashboard communicator
     dashboard = DashboardCommunicator(command_queue)
     
-    print(f"[INFO] Starting parallel chromosome processing with {len(chromosomes)} chromosomes")
+    print(f"[INFO] Starting parallel search - {len(chromosomes)} chromosomes")
+    print(f"[INFO] Monitor progress in dashboard window")
+    
+    # CREATE SHARED GTF CACHE (eliminates worker reloading overhead)
+    print(f"[INFO] Creating shared GTF cache...")
+    cache_file = create_shared_gtf_cache(gtf_path)
+    print(f"[INFO] Cache ready - workers will load annotations instantly")
     
     # Determine optimal worker count
     max_workers = min(os.cpu_count(), len(chromosomes))
-    print(f"[INFO] Using {max_workers} workers for parallel processing")
     
     # Send initial dashboard info
     algorithm = "Aho-Corasick" if max_mismatches == 0 else "Myers Bit-Vector"
     dashboard.send_search_info(pattern, chromosomes, algorithm)
     
-    print(f"\n{'='*80}")
-    print(f"PARALLEL SEARCH PROGRESS - {len(chromosomes)} CHROMOSOMES")
-    print(f"{'='*80}")
-    
-    # Print table header
-    table_formatter.print_header(include_chrom=True)
+    # Send sequence file info if available
+    if hasattr(enhanced_parallel_chromosome_search, 'sequence_file_path'):
+        dashboard.command_queue.put(("SEQUENCE_UPDATE", {
+            'filename': enhanced_parallel_chromosome_search.sequence_file_path,
+            'total': len(chromosomes),
+            'current': 0
+        }))
     
     all_results = []
     completed_count = 0
@@ -1513,15 +1827,21 @@ def enhanced_parallel_chromosome_search(chromosomes: List[str], fasta_path: str,
     
     # Submit tasks
     future_to_chrom = {}
+    worker_to_chrom = {}  # Track which worker processes which chromosome
+    
     for i, chrom in enumerate(chromosomes):
         future = executor.submit(enhanced_search_single_chromosome_worker, 
                                chrom, fasta_path, gtf_path, 
                                pattern, max_mismatches, boundary_bp, i)
         future_to_chrom[future] = chrom
         
-        # Update dashboard
+        # Update dashboard with worker status
         worker_id = i % max_workers
+        worker_to_chrom[chrom] = worker_id  # Store worker assignment
         dashboard.update_worker(worker_id, "Starting", 0, f"Loading {chrom}")
+        
+        # Update worker status to Active (no simulation to avoid race conditions)
+        dashboard.update_worker(worker_id, "Active", 50, f"Processing {chrom}")
     
     # Process results as they complete
     for future in as_completed(future_to_chrom):
@@ -1532,7 +1852,7 @@ def enhanced_parallel_chromosome_search(chromosomes: List[str], fasta_path: str,
             success, chrom_name, results = future.result()
             
             if success and results:
-                # Filter valid results and display them
+                # Filter valid results and send to dashboard
                 valid_results = []
                 for result in results:
                     if isinstance(result, (tuple, list)) and len(result) >= 8:
@@ -1542,43 +1862,43 @@ def enhanced_parallel_chromosome_search(chromosomes: List[str], fasta_path: str,
                         else:
                             full_result = tuple(result)
                             
-                        # Validate and print row
-                        if table_formatter.print_row(full_result, include_chrom=True):
-                            valid_results.append(full_result)
-                            all_results.append(full_result)
+                        # Send to dashboard
+                        if command_queue:
+                            command_queue.put(("NEW_RESULT", full_result))
+                        
+                        valid_results.append(full_result)
+                        all_results.append(full_result)
                 
-                print(f"[INFO] {chrom_name} completed: {len(valid_results)} matches found")
-                
-                # Update dashboard
-                worker_id = (completed_count - 1) % max_workers
+                # Update dashboard - no terminal output needed
+                worker_id = worker_to_chrom.get(chrom_name, 0)  # Get the correct worker ID
                 dashboard.update_worker(worker_id, "Completed", 100, 
                                       f"{chrom_name}: {len(valid_results)} matches")
                 
             else:
-                print(f"[INFO] {chrom_name} completed: No matches found")
-                worker_id = (completed_count - 1) % max_workers
+                worker_id = worker_to_chrom.get(chrom_name, 0)  # Get the correct worker ID
                 dashboard.update_worker(worker_id, "Completed", 100, f"{chrom_name}: No matches")
+            
+            # Update sequence progress
+            if command_queue:
+                command_queue.put(("SEQUENCE_UPDATE", {
+                    'current': completed_count,
+                    'total': len(chromosomes)
+                }))
                 
             # Update overall progress
             dashboard.update_overall_progress(completed_count, len(chromosomes), len(all_results))
             
         except Exception as e:
             print(f"[ERROR] {chrom} failed: {str(e)}")
-            worker_id = (completed_count - 1) % max_workers
+            worker_id = worker_to_chrom.get(chrom, 0)  # Get the correct worker ID
             dashboard.update_worker(worker_id, "Failed", 0, f"{chrom}: Error")
     
-    # Print footer
-    table_formatter.print_footer()
-    
-    print(f"\n{'='*80}")
-    print(f"SEARCH COMPLETE - {len(all_results)} TOTAL MATCHES ACROSS {len(chromosomes)} CHROMOSOMES")
-    print(f"{'='*80}")
+    print(f"\n[INFO] Search complete: {len(all_results)} matches across {len(chromosomes)} chromosomes")
+    print(f"[INFO] Results displayed in dashboard window")
     
     return all_results
 
-def parallel_chromosome_search(chromosomes: List[str], fasta_path: str, gtf_path: str,
-                             pattern: str, max_mismatches: int, boundary_bp: int, 
-                             command_queue: Optional[multiprocessing.Queue] = None) -> List:
+# Legacy function removed - replaced by enhanced_parallel_chromosome_search
     """
     Perform parallel search across multiple chromosomes using global process pool.
     Returns aggregated results from all chromosomes with live output.
@@ -1601,8 +1921,7 @@ def parallel_chromosome_search(chromosomes: List[str], fasta_path: str, gtf_path
     # Print header for live output
     _print_results_header(include_chrom=True)
     
-    # Set up worker progress display area
-    max_workers = min(multiprocessing.cpu_count(), len(chromosomes))
+    # Use the already calculated max_workers
     
     # Check if dashboard is available
     use_dashboard = command_queue is not None
@@ -1882,6 +2201,7 @@ def main():
     """
     Enhanced main function with complete algorithm transparency and debugging.
     """
+    import os  # Import os for file operations
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
@@ -2128,13 +2448,39 @@ def main():
                         continue
                     boundary_bp = int(boundary_str) if boundary_str.isdigit() else 0
                     all_matches = []
-                    print(f"\nStarting batch search for {len(queries)} patterns...")
+                    total_sequences = len(queries)
+                    current_sequence = 0
+                    
+                    print(f"\n[INFO] Starting batch search for {total_sequences} patterns")
+                    print(f"[INFO] Results displayed in dashboard window")
+                    
+                    # Send sequence file info to dashboard
+                    if command_queue:
+                        command_queue.put(("SEQUENCE_UPDATE", {
+                            'filename': selected_filename,
+                            'total': total_sequences,
+                            'current': 0
+                        }))
+                        
+                        # Also send search info with sequence file
+                        command_queue.put(("SEARCH_INFO", {
+                            'sequence_file': selected_filepath,
+                            'total_sequences': total_sequences
+                        }))
+                    
                     for header, pattern in queries.items():
-                        print(f"\n--- Searching for pattern from: {header} ---")
-                        # Print search banner for batch
-                        _print_search_banner(species_name, complete_genome_file, gene_annotation_file,
-                                             selected_chrom if selected_chrom else ('ALL' if multi_chrom else 'Whole genome'),
-                                             pattern, max_mismatches, boundary_bp)
+                        current_sequence += 1
+                        
+                        # Update dashboard with current sequence progress
+                        if command_queue:
+                            command_queue.put(("SEQUENCE_UPDATE", {
+                                'current': current_sequence,
+                                'total': total_sequences
+                            }))
+                        
+                        # Minimal pattern info - no search banner spam
+                        print(f"[INFO] Pattern {current_sequence}/{total_sequences}: {header[:50]}{'...' if len(header) > 50 else ''}")
+                        
                         # ALWAYS use parallel processing when possible
                         if multi_chrom:
                             gtf_path = gene_annotation_file
@@ -2145,33 +2491,30 @@ def main():
                             matches = enhanced_parallel_chromosome_search(chroms, fasta_path, gtf_path, 
                                                                        pattern, max_mismatches, boundary_bp, command_queue)
                             
-                            # Print bottom frame for parallel results
-                            if matches:
-                                _print_bottom_frame()
-                            else:
-                                print("No matches found across all chromosomes.")
+                            # Results are now displayed in dashboard, no need to print here
                         else:
                             # For non-GTF files, use parallel genome chunk processing
-                            print(f"[INFO] Using parallel genome chunk processing")
                             matches = parallel_single_genome_search(analyzer, pattern, max_mismatches, boundary_bp)
-                        print(f"Found {len(matches)} total match(es) for this pattern.")
+                            
+                            # Send results to dashboard if available
+                            if command_queue and matches:
+                                for match in matches:
+                                    if len(match) == 8:
+                                        # Add chromosome placeholder for non-chromosome results
+                                        full_match = ("N/A",) + tuple(match)
+                                    else:
+                                        full_match = tuple(match)
+                                    command_queue.put(("NEW_RESULT", full_match))
                         
-                        # Perform cache cleanup after search operations
-                        _perform_cache_cleanup(cache_loader, "search")
-                        
-                        if len(matches) == 0:
-                            print("No matches found.")
-                        if matches:
-                            print("\nIndividual Search Results (Sorted by Position):")
-                            # Use centralized formatting function
-                            include_chrom = matches and len(matches[0]) == 9
-                            _print_formatted_results(matches, include_chrom=include_chrom)
+                        # Store matches for final summary
                         for match in matches:
                             original_location = match[-1]
                             full_match_info = list(match)
                             full_match_info[-1] = f"{original_location} (Query: {header[:30]}...)"
                             all_matches.append(tuple(full_match_info))
-                    print(f"\n--- Batch search complete. Found {len(all_matches)} total matches across all queries. ---")
+                    
+                    print(f"\n[INFO] Batch search complete: {len(all_matches)} total matches found")
+                    print(f"[INFO] All results displayed in dashboard window")
                     
                     # Perform cache cleanup after batch search operations
                     _perform_cache_cleanup(cache_loader, "batch search")
