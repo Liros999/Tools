@@ -1,0 +1,32 @@
+# Large genome data files (won't change)
+Genome_Analyzer/data/Homo_Sapiens/GRCh38.primary_assembly.genome.fa
+Genome_Analyzer/data/E.Coli/E.Coli_K12_Seq.fasta
+Genome_Analyzer/data/B.Sub/B.subtilis_Seq.txt
+
+# Cache files
+Genome_Analyzer/src/cache/
+*.raw
+*.pkl
+*.pickle
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
