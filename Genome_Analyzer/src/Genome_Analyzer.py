@@ -7,9 +7,12 @@ import sys
 import signal
 import multiprocessing
 import mmap
+import threading
+import queue
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import atexit
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 from datetime import datetime
 from tqdm import tqdm
 from intervaltree import Interval, IntervalTree
@@ -33,6 +36,265 @@ except ImportError:
 class GenomeAnalysisError(Exception):
     """Custom exception for genome analysis errors."""
     pass
+
+# ============================================================================
+# ENHANCED LIVE OUTPUT & DASHBOARD COMMUNICATION CLASSES
+# ============================================================================
+
+class LiveOutputManager:
+    """Manages live output parsing and filtering to prevent spam and empty rows."""
+    
+    def __init__(self):
+        self.message_buffer = []
+        self.last_progress = {}
+        self.worker_states = {}
+        self.result_queue = queue.Queue()
+        self.dashboard_queue = None
+        
+    def set_dashboard_queue(self, dashboard_queue):
+        """Set the dashboard communication queue."""
+        self.dashboard_queue = dashboard_queue
+        
+    def parse_info_message(self, message: str) -> Optional[Dict[str, Any]]:
+        """Parse INFO messages and extract meaningful data."""
+        if not message.startswith('[INFO]'):
+            return None
+            
+        # Extract worker ID from chromosome info
+        if 'Worker' in message and ':' in message:
+            parts = message.split(':')
+            if len(parts) >= 2:
+                worker_info = parts[0].replace('[INFO] Worker', '').strip()
+                action_info = ':'.join(parts[1:]).strip()
+                
+                return {
+                    'type': 'worker_update',
+                    'worker_id': worker_info,
+                    'action': action_info,
+                    'timestamp': time.time()
+                }
+                
+        # Extract search progress info
+        if 'Searching' in message and 'strand' in message:
+            if 'forward' in message:
+                return {
+                    'type': 'search_progress',
+                    'strand': 'forward',
+                    'message': message,
+                    'timestamp': time.time()
+                }
+            elif 'reverse' in message:
+                return {
+                    'type': 'search_progress', 
+                    'strand': 'reverse',
+                    'message': message,
+                    'timestamp': time.time()
+                }
+                
+        # Extract memory usage info
+        if 'Memory' in message and ('before' in message or 'after' in message):
+            return {
+                'type': 'memory_update',
+                'message': message,
+                'timestamp': time.time()
+            }
+            
+        return None
+        
+    def should_display_message(self, parsed_data: Dict[str, Any]) -> bool:
+        """Determine if a message should be displayed to avoid spam."""
+        if not parsed_data:
+            return False
+            
+        msg_type = parsed_data.get('type')
+        
+        # Always show worker updates and memory updates
+        if msg_type in ['worker_update', 'memory_update']:
+            return True
+            
+        # Throttle search progress messages
+        if msg_type == 'search_progress':
+            last_time = self.last_progress.get(parsed_data.get('strand'), 0)
+            current_time = parsed_data.get('timestamp', 0)
+            
+            # Only show search progress every 2 seconds
+            if current_time - last_time > 2.0:
+                self.last_progress[parsed_data['strand']] = current_time
+                return True
+                
+        return False
+
+class TableFormatter:
+    """Handles proper table formatting with validation to prevent empty rows."""
+    
+    def __init__(self):
+        self.columns = ['Chr', 'Start', 'End', 'S', 'Pattern', 'Found', 'RevComp', 'Mis', 'Location']
+        self.widths = [6, 8, 8, 2, 15, 15, 15, 3, 20]
+        self.total_width = sum(self.widths) + len(self.widths) * 2  # 2 spaces per column
+        
+    def print_header(self, include_chrom: bool = True):
+        """Print table header with proper formatting."""
+        if not include_chrom:
+            columns = self.columns[1:]  # Skip chromosome column
+            widths = self.widths[1:]
+        else:
+            columns = self.columns
+            widths = self.widths
+            
+        # Create header string
+        header_parts = []
+        for col, width in zip(columns, widths):
+            header_parts.append(f"{col:<{width}}")
+            
+        header = " ".join(header_parts)
+        border = "+" + "-" * (len(header) + 2) + "+"
+        
+        print(border)
+        print(f"| {header} |")
+        print(border)
+        
+    def print_row(self, data: Tuple, include_chrom: bool = True) -> bool:
+        """Print a table row with validation. Returns True if printed, False if invalid."""
+        if not data or len(data) == 0:
+            return False
+            
+        # Validate data has minimum required fields
+        min_fields = 8 if include_chrom else 7
+        if len(data) < min_fields:
+            return False
+            
+        # Extract data based on format
+        if include_chrom:
+            if len(data) >= 9:
+                chrom, start, end, strand, pattern, found, revcomp, mis, location = data[:9]
+            else:
+                return False
+        else:
+            if len(data) >= 8:
+                start, end, strand, pattern, found, revcomp, mis, location = data[:8]
+            else:
+                return False
+                
+        # Validate essential fields are not empty
+        if include_chrom and not str(chrom).strip():
+            return False
+        if not str(start).strip() or not str(end).strip():
+            return False
+            
+        # Format row data
+        try:
+            if include_chrom:
+                row_data = [
+                    str(chrom)[:6],
+                    str(start)[:8], 
+                    str(end)[:8],
+                    str(strand)[:2],
+                    str(pattern)[:15],
+                    str(found)[:15],
+                    str(revcomp)[:15],
+                    str(mis)[:3],
+                    str(location)[:20]
+                ]
+            else:
+                row_data = [
+                    str(start)[:8],
+                    str(end)[:8], 
+                    str(strand)[:2],
+                    str(pattern)[:15],
+                    str(found)[:15],
+                    str(revcomp)[:15],
+                    str(mis)[:3],
+                    str(location)[:20]
+                ]
+                
+            # Create formatted row
+            widths = self.widths if include_chrom else self.widths[1:]
+            row_parts = []
+            for data_item, width in zip(row_data, widths):
+                row_parts.append(f"{data_item:<{width}}")
+                
+            row = " ".join(row_parts)
+            print(f"| {row} |", flush=True)
+            return True
+            
+        except Exception as e:
+            print(f"[DEBUG] Row formatting error: {e}")
+            return False
+            
+    def print_footer(self):
+        """Print table footer."""
+        border = "+" + "-" * (self.total_width + 2) + "+"
+        print(border)
+
+class DashboardCommunicator:
+    """Handles real-time dashboard communication with proper message formatting."""
+    
+    def __init__(self, command_queue: Optional[multiprocessing.Queue] = None):
+        self.command_queue = command_queue
+        self.worker_states = {}
+        self.overall_progress = {'completed': 0, 'total': 0, 'matches': 0}
+        
+    def is_available(self) -> bool:
+        """Check if dashboard is available for communication."""
+        return self.command_queue is not None
+        
+    def update_worker(self, worker_id: str, status: str, progress: int, details: str = ""):
+        """Send worker update to dashboard."""
+        if not self.is_available():
+            return
+            
+        try:
+            message = {
+                'worker_id': str(worker_id),
+                'status': status,
+                'progress': max(0, min(100, progress)),
+                'details': str(details)[:50],  # Limit detail length
+                'timestamp': time.time()
+            }
+            
+            self.command_queue.put(("UPDATE_WORKER", message), timeout=0.1)
+            self.worker_states[worker_id] = message
+            
+        except Exception as e:
+            print(f"[DEBUG] Dashboard worker update failed: {e}")
+            
+    def update_overall_progress(self, completed: int, total: int, matches: int):
+        """Send overall progress update to dashboard."""
+        if not self.is_available():
+            return
+            
+        try:
+            progress_data = {
+                'completed': completed,
+                'total': total,
+                'matches': matches,
+                'percentage': (completed / total * 100) if total > 0 else 0,
+                'timestamp': time.time()
+            }
+            
+            self.command_queue.put(("UPDATE_OVERALL", progress_data), timeout=0.1)
+            self.overall_progress = progress_data
+            
+        except Exception as e:
+            print(f"[DEBUG] Dashboard overall update failed: {e}")
+            
+    def send_search_info(self, pattern: str, chromosomes: List[str], algorithm: str):
+        """Send search configuration info to dashboard."""
+        if not self.is_available():
+            return
+            
+        try:
+            search_info = {
+                'pattern': pattern,
+                'chromosomes': chromosomes,
+                'algorithm': algorithm,
+                'start_time': time.time()
+            }
+            
+            self.command_queue.put(("SEARCH_INFO", search_info), timeout=0.1)
+            
+        except Exception as e:
+            print(f"[DEBUG] Dashboard search info failed: {e}")
 
 # Global frame width for pretty output
 FRAME_WIDTH: int = 0
@@ -940,64 +1202,61 @@ def _get_default_annotation_file(species_name: str) -> Optional[str]:
     }
     return defaults.get(species_name)
 
-def _search_single_chromosome_worker(chromosome: str, fasta_path: str, gtf_path: str, 
-                                   pattern: str, max_mismatches: int, boundary_bp: int, worker_line: int = 0) -> Tuple[bool, str, List]:
-    """
-    Worker function for parallel chromosome processing.
-    Uses pre-initialized analyzer if available, otherwise creates new instance.
-    Uses memory mapping for large genome files.
-    Returns (success, chromosome, results_list).
-    """
+def enhanced_search_single_chromosome_worker(chromosome: str, fasta_path: str, gtf_path: str, 
+                                           pattern: str, max_mismatches: int, boundary_bp: int, 
+                                           worker_id: int = 0) -> Tuple[bool, str, List]:
+    """Enhanced worker function with proper progress reporting and result validation."""
+    
     try:
-        # Use pre-initialized analyzer (required for optimal performance)
+        # Use pre-initialized analyzer
         if 'worker_analyzer' in globals():
             analyzer = worker_analyzer
-            # Reset analyzer state for new chromosome
             analyzer.sequence = ""
             analyzer.gene_data = {}
             analyzer.gene_tree = IntervalTree()
             analyzer.cds_tree = IntervalTree()
         else:
-            raise GenomeAnalysisError("Worker pre-initialization required. Use global process pool with initializer.")
+            raise Exception("Worker pre-initialization required")
         
-        # Load chromosome data with memory mapping if appropriate
-        print(f"[INFO] Worker loading chromosome {chromosome} with memory mapping")
+        # Memory monitoring
+        print(f"[INFO] Worker {chromosome}: Starting chromosome processing")
         
-        # MEMORY USAGE MONITORING FOR WORKER DASHBOARD
-        pre_load_memory = _monitor_memory_usage()[0]
-        print(f"[INFO] Worker {chromosome}: Memory before loading: {pre_load_memory:.1f} MB")
-        
+        # Load sequence with progress reporting
+        print(f"[INFO] Worker {chromosome}: Loading sequence data...")
         sequence = load_genome_for_chromosome(fasta_path, chromosome, use_memory_mapping=True)
         analyzer.sequence = sequence
         
-        # MEMORY USAGE AFTER LOADING
-        post_load_memory, memory_increase, _ = _monitor_memory_usage(pre_load_memory)
-        print(f"[INFO] Worker {chromosome}: Memory after loading: {post_load_memory:.1f} MB (+{memory_increase:.1f} MB)")
-        analyzer.current_chromosome = chromosome  # Set chromosome ID for progress display
-        analyzer.worker_line_number = worker_line  # Set worker line number for progress display
+        print(f"[INFO] Worker {chromosome}: Loading annotations...")
+        analyzer.current_chromosome = chromosome
         analyzer.load_annotations_from_gtf(gtf_path, chromosome)
         
-        # Perform search with individual progress tracking and live output
-        print(f"[INFO] Worker {chromosome}: Starting search for pattern '{pattern}' on {len(sequence):,} bp")
-        print(f"[INFO] Worker {chromosome}: Progress tracking enabled")
+        # Perform search with progress
+        print(f"[INFO] Worker {chromosome}: Starting pattern search for '{pattern}'")
+        print(f"[INFO] Worker {chromosome}: Sequence length: {len(sequence):,} bp")
         
-        # ENHANCED PROGRESS REPORTING FOR WORKER DASHBOARD
-        if len(sequence) > MEMORY_MAPPING_THRESHOLD_BYTES:  # Use constant for threshold
-            print(f"[INFO] Worker {chromosome}: Large sequence detected, using optimized chunked processing")
-        else:
-            print(f"[INFO] Worker {chromosome}: Standard sequence size, using direct processing")
-        
+        # Execute search
         results = analyzer.search_sequence(pattern, max_mismatches, boundary_bp, stream=True)
-        print(f"[INFO] Worker {chromosome}: Completed search, found {len(results)} matches")
         
-        # FINAL MEMORY USAGE REPORT FOR WORKER DASHBOARD
-        final_memory, total_memory_increase, _ = _monitor_memory_usage(pre_load_memory)
-        print(f"[INFO] Worker {chromosome}: Final memory: {final_memory:.1f} MB (Total increase: +{total_memory_increase:.1f} MB)")
+        # Validate results
+        valid_results = []
+        for result in results:
+            if isinstance(result, (tuple, list)) and len(result) >= 8:
+                valid_results.append(result)
         
-        return True, chromosome, results
+        print(f"[INFO] Worker {chromosome}: Search completed - {len(valid_results)} valid matches found")
+        
+        return True, chromosome, valid_results
         
     except Exception as e:
-        return False, chromosome, [f"Error processing {chromosome}: {str(e)}"]
+        print(f"[ERROR] Worker {chromosome}: {str(e)}")
+        return False, chromosome, []
+
+# Keep the old function for backward compatibility during transition
+def _search_single_chromosome_worker(chromosome: str, fasta_path: str, gtf_path: str, 
+                                   pattern: str, max_mismatches: int, boundary_bp: int, worker_line: int = 0) -> Tuple[bool, str, List]:
+    """Legacy worker function - now calls enhanced version."""
+    return enhanced_search_single_chromosome_worker(chromosome, fasta_path, gtf_path, 
+                                                  pattern, max_mismatches, boundary_bp, 0)
 
 def _search_genome_chunk_worker(analyzer: EColiAnalyzer, start: int, end: int, 
                                pattern: str, max_mismatches: int, boundary_bp: int) -> List:
@@ -1218,6 +1477,104 @@ def load_genome_for_chromosome(fasta_path: str, chromosome: str, use_memory_mapp
         analyzer = EColiAnalyzer()
         analyzer.load_chromosome_sequence(fasta_path, chromosome)
         return analyzer.sequence
+
+def enhanced_parallel_chromosome_search(chromosomes: List[str], fasta_path: str, gtf_path: str,
+                                       pattern: str, max_mismatches: int, boundary_bp: int, 
+                                       command_queue: Optional[multiprocessing.Queue] = None) -> List:
+    """Enhanced parallel search with proper live output and dashboard communication."""
+    
+    # Initialize components
+    output_manager = LiveOutputManager()
+    table_formatter = TableFormatter()
+    dashboard = DashboardCommunicator(command_queue)
+    
+    print(f"[INFO] Starting parallel chromosome processing with {len(chromosomes)} chromosomes")
+    
+    # Determine optimal worker count
+    max_workers = min(os.cpu_count(), len(chromosomes))
+    print(f"[INFO] Using {max_workers} workers for parallel processing")
+    
+    # Send initial dashboard info
+    algorithm = "Aho-Corasick" if max_mismatches == 0 else "Myers Bit-Vector"
+    dashboard.send_search_info(pattern, chromosomes, algorithm)
+    
+    print(f"\n{'='*80}")
+    print(f"PARALLEL SEARCH PROGRESS - {len(chromosomes)} CHROMOSOMES")
+    print(f"{'='*80}")
+    
+    # Print table header
+    table_formatter.print_header(include_chrom=True)
+    
+    all_results = []
+    completed_count = 0
+    
+    # Get global process pool
+    executor = _get_global_process_pool(max_workers)
+    
+    # Submit tasks
+    future_to_chrom = {}
+    for i, chrom in enumerate(chromosomes):
+        future = executor.submit(enhanced_search_single_chromosome_worker, 
+                               chrom, fasta_path, gtf_path, 
+                               pattern, max_mismatches, boundary_bp, i)
+        future_to_chrom[future] = chrom
+        
+        # Update dashboard
+        worker_id = i % max_workers
+        dashboard.update_worker(worker_id, "Starting", 0, f"Loading {chrom}")
+    
+    # Process results as they complete
+    for future in as_completed(future_to_chrom):
+        chrom = future_to_chrom[future]
+        completed_count += 1
+        
+        try:
+            success, chrom_name, results = future.result()
+            
+            if success and results:
+                # Filter valid results and display them
+                valid_results = []
+                for result in results:
+                    if isinstance(result, (tuple, list)) and len(result) >= 8:
+                        # Add chromosome to result if not present
+                        if len(result) == 8:
+                            full_result = (chrom_name,) + tuple(result)
+                        else:
+                            full_result = tuple(result)
+                            
+                        # Validate and print row
+                        if table_formatter.print_row(full_result, include_chrom=True):
+                            valid_results.append(full_result)
+                            all_results.append(full_result)
+                
+                print(f"[INFO] {chrom_name} completed: {len(valid_results)} matches found")
+                
+                # Update dashboard
+                worker_id = (completed_count - 1) % max_workers
+                dashboard.update_worker(worker_id, "Completed", 100, 
+                                      f"{chrom_name}: {len(valid_results)} matches")
+                
+            else:
+                print(f"[INFO] {chrom_name} completed: No matches found")
+                worker_id = (completed_count - 1) % max_workers
+                dashboard.update_worker(worker_id, "Completed", 100, f"{chrom_name}: No matches")
+                
+            # Update overall progress
+            dashboard.update_overall_progress(completed_count, len(chromosomes), len(all_results))
+            
+        except Exception as e:
+            print(f"[ERROR] {chrom} failed: {str(e)}")
+            worker_id = (completed_count - 1) % max_workers
+            dashboard.update_worker(worker_id, "Failed", 0, f"{chrom}: Error")
+    
+    # Print footer
+    table_formatter.print_footer()
+    
+    print(f"\n{'='*80}")
+    print(f"SEARCH COMPLETE - {len(all_results)} TOTAL MATCHES ACROSS {len(chromosomes)} CHROMOSOMES")
+    print(f"{'='*80}")
+    
+    return all_results
 
 def parallel_chromosome_search(chromosomes: List[str], fasta_path: str, gtf_path: str,
                              pattern: str, max_mismatches: int, boundary_bp: int, 
@@ -1698,8 +2055,8 @@ def main():
                     chroms = _get_filtered_chromosomes(gtf_path, fasta_path)
                     
                     # Use parallel processing for multi-chromosome search
-                    matches = parallel_chromosome_search(chroms, fasta_path, gtf_path, 
-                                                       pattern, max_mismatches, boundary_bp, command_queue)
+                    matches = enhanced_parallel_chromosome_search(chroms, fasta_path, gtf_path, 
+                                                               pattern, max_mismatches, boundary_bp, command_queue)
                     
                     # Display results using centralized formatting
                     if matches:
@@ -1714,8 +2071,8 @@ def main():
                         gtf_path = gene_annotation_file
                         fasta_path = complete_genome_file
                         chroms = _get_filtered_chromosomes(gtf_path, fasta_path)
-                        matches = parallel_chromosome_search(chroms, fasta_path, gtf_path, 
-                                                           pattern, max_mismatches, boundary_bp, command_queue)
+                        matches = enhanced_parallel_chromosome_search(chroms, fasta_path, gtf_path, 
+                                                                   pattern, max_mismatches, boundary_bp, command_queue)
                     else:
                         # For non-GTF files, use parallel genome chunk processing
                         matches = parallel_single_genome_search(analyzer, pattern, max_mismatches, boundary_bp)
@@ -1785,8 +2142,8 @@ def main():
                             chroms = _get_filtered_chromosomes(gtf_path, fasta_path)
                             
                             # Use parallel processing for multi-chromosome search
-                            matches = parallel_chromosome_search(chroms, fasta_path, gtf_path, 
-                                                               pattern, max_mismatches, boundary_bp, command_queue)
+                            matches = enhanced_parallel_chromosome_search(chroms, fasta_path, gtf_path, 
+                                                                       pattern, max_mismatches, boundary_bp, command_queue)
                             
                             # Print bottom frame for parallel results
                             if matches:

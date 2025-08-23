@@ -4,236 +4,287 @@ Worker Dashboard for Genome Analyzer
 Runs as a separate process to avoid tkinter threading issues on Windows.
 """
 
+# WORKER DASHBOARD FIXES FOR LIVE UPDATES
+# These fixes ensure the dashboard properly receives and displays live updates
+
 import tkinter as tk
 from tkinter import ttk
-import queue
-import sys
+import threading
+import multiprocessing
+import time
+from typing import Dict, Any, Optional
 
-class DashboardApp:
-    """A tkinter-based dashboard to monitor worker progress."""
+class EnhancedWorkerDashboard:
+    """Enhanced worker dashboard with proper live update handling."""
     
-    def __init__(self, root: tk.Tk, command_queue: queue.Queue, worker_count: int):
-        self.root = root
+    def __init__(self, command_queue: multiprocessing.Queue, worker_count: int = 8):
         self.command_queue = command_queue
         self.worker_count = worker_count
+        self.running = True
         
-        # Configure the main window
-        self.root.title("🧬 Genome Analyzer - Worker Dashboard")
-        self.root.geometry("900x600")
+        # Initialize data structures
+        self.worker_data = {}
+        self.overall_progress = {'completed': 0, 'total': 0, 'matches': 0, 'percentage': 0}
+        self.search_info = {'pattern': '', 'chromosomes': [], 'algorithm': ''}
+        
+        # Create GUI
+        self.root = tk.Tk()
+        self.root.title("Genome Search Progress Dashboard")
+        self.root.geometry("1000x700")
         self.root.configure(bg='#2b2b2b')
         
-        # Create the UI
-        self.create_ui()
+        # Set up GUI components
+        self._create_widgets()
         
-        # Start processing messages
-        self.process_queue()
+        # Start update thread
+        self.update_thread = threading.Thread(target=self._message_processor, daemon=True)
+        self.update_thread.start()
+        
+        # Start GUI refresh timer
+        self._schedule_gui_refresh()
     
-    def create_ui(self):
-        """Create the dashboard UI components."""
-        # Title
-        title_label = tk.Label(
-            self.root, 
-            text="🧬 GENOME ANALYZER WORKER DASHBOARD", 
-            font=('Arial', 16, 'bold'),
-            bg='#2b2b2b', fg='#ffffff'
-        )
-        title_label.pack(pady=20)
+    def _create_widgets(self):
+        """Create the dashboard GUI components."""
         
-        # Overall Progress Section
-        overall_frame = tk.Frame(self.root, bg='#2b2b2b')
-        overall_frame.pack(pady=10, padx=20, fill='x')
+        # Title frame
+        title_frame = tk.Frame(self.root, bg='#2b2b2b', height=80)
+        title_frame.pack(fill='x', padx=10, pady=5)
+        title_frame.pack_propagate(False)
         
-        tk.Label(
-            overall_frame, 
-            text="Overall Progress:", 
-            font=('Arial', 12, 'bold'),
-            bg='#2b2b2b', fg='#ffffff'
-        ).pack(anchor='w')
+        title_label = tk.Label(title_frame, text="🧬 Genome Search Dashboard", 
+                             font=('Arial', 18, 'bold'), fg='#00ff88', bg='#2b2b2b')
+        title_label.pack(pady=10)
         
-        self.overall_progress = ttk.Progressbar(
-            overall_frame, 
-            length=700, 
-            mode='determinate',
-            style='Custom.Horizontal.TProgressbar'
-        )
-        self.overall_progress.pack(pady=5, fill='x')
+        # Search info frame
+        info_frame = tk.Frame(self.root, bg='#3b3b3b', height=100)
+        info_frame.pack(fill='x', padx=10, pady=5)
+        info_frame.pack_propagate(False)
         
-        self.overall_label = tk.Label(
-            overall_frame, 
-            text="0 / 0 chromosomes completed (0%)",
-            font=('Arial', 10),
-            bg='#2b2b2b', fg='#cccccc'
-        )
-        self.overall_label.pack(anchor='w')
+        self.pattern_label = tk.Label(info_frame, text="Pattern: Loading...", 
+                                    font=('Arial', 12), fg='#ffffff', bg='#3b3b3b')
+        self.pattern_label.pack(anchor='w', padx=10, pady=2)
         
-        # Results Counter
-        results_frame = tk.Frame(self.root, bg='#2b2b2b')
-        results_frame.pack(pady=10, padx=20, fill='x')
+        self.algorithm_label = tk.Label(info_frame, text="Algorithm: Loading...", 
+                                      font=('Arial', 12), fg='#ffffff', bg='#3b3b3b')
+        self.algorithm_label.pack(anchor='w', padx=10, pady=2)
         
-        tk.Label(
-            results_frame, 
-            text="Results Found:", 
-            font=('Arial', 12, 'bold'),
-            bg='#2b2b2b', fg='#ffffff'
-        ).pack(anchor='w')
+        self.chromosomes_label = tk.Label(info_frame, text="Chromosomes: Loading...", 
+                                        font=('Arial', 12), fg='#ffffff', bg='#3b3b3b')
+        self.chromosomes_label.pack(anchor='w', padx=10, pady=2)
         
-        self.results_label = tk.Label(
-            results_frame, 
-            text="0 results found",
-            font=('Arial', 14, 'bold'),
-            bg='#2b2b2b', fg='#4CAF50'
-        )
-        self.results_label.pack(anchor='w')
+        # Overall progress frame
+        progress_frame = tk.Frame(self.root, bg='#3b3b3b', height=80)
+        progress_frame.pack(fill='x', padx=10, pady=5)
+        progress_frame.pack_propagate(False)
         
-        # Worker Details Section
+        self.overall_label = tk.Label(progress_frame, text="Overall Progress: 0/0 (0%)", 
+                                    font=('Arial', 14, 'bold'), fg='#00ff88', bg='#3b3b3b')
+        self.overall_label.pack(pady=5)
+        
+        self.overall_progress_bar = ttk.Progressbar(progress_frame, length=800, mode='determinate')
+        self.overall_progress_bar.pack(pady=5)
+        
+        self.matches_label = tk.Label(progress_frame, text="Total Matches: 0", 
+                                    font=('Arial', 12), fg='#ffaa00', bg='#3b3b3b')
+        self.matches_label.pack()
+        
+        # Worker status frame with scrollable content
         worker_frame = tk.Frame(self.root, bg='#2b2b2b')
-        worker_frame.pack(pady=20, padx=20, fill='both', expand=True)
+        worker_frame.pack(fill='both', expand=True, padx=10, pady=5)
         
-        tk.Label(
-            worker_frame, 
-            text="Worker Status:", 
-            font=('Arial', 12, 'bold'),
-            bg='#2b2b2b', fg='#ffffff'
-        ).pack(anchor='w')
+        # Create scrollable canvas
+        canvas = tk.Canvas(worker_frame, bg='#2b2b2b', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(worker_frame, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = tk.Frame(canvas, bg='#2b2b2b')
         
-        # Create worker widgets
-        self.worker_widgets = []
-        for i in range(self.worker_count):
-            worker_container = tk.Frame(worker_frame, bg='#2b2b2b')
-            worker_container.pack(fill='x', pady=4)
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Worker status widgets
+        self.worker_widgets = {}
+        self._create_worker_widgets()
+    
+    def _create_worker_widgets(self):
+        """Create widgets for each worker."""
+        for worker_id in range(self.worker_count):
+            worker_container = tk.Frame(self.scrollable_frame, bg='#4b4b4b', relief='raised', bd=1)
+            worker_container.pack(fill='x', padx=5, pady=2)
             
-            # Worker label
-            label = tk.Label(
-                worker_container, 
-                text=f"Worker {i+1}: [Idle]", 
-                width=60, 
-                anchor="w",
-                font=('Consolas', 9),
-                bg='#404040', fg='#ffffff',
-                relief='solid', bd=1
-            )
-            label.pack(side='left', padx=5, pady=2)
+            # Worker header
+            header_frame = tk.Frame(worker_container, bg='#4b4b4b')
+            header_frame.pack(fill='x', padx=5, pady=2)
+            
+            worker_label = tk.Label(header_frame, text=f"Worker {worker_id + 1}", 
+                                  font=('Arial', 12, 'bold'), fg='#ffffff', bg='#4b4b4b')
+            worker_label.pack(side='left')
+            
+            status_label = tk.Label(header_frame, text="Waiting...", 
+                                  font=('Arial', 10), fg='#888888', bg='#4b4b4b')
+            status_label.pack(side='right')
             
             # Progress bar
-            progress = ttk.Progressbar(
-                worker_container, 
-                length=200, 
-                mode='determinate'
-            )
-            progress.pack(side='left', padx=5, pady=2, fill='x', expand=True)
+            progress_bar = ttk.Progressbar(worker_container, length=400, mode='determinate')
+            progress_bar.pack(fill='x', padx=5, pady=2)
             
-            self.worker_widgets.append({
-                'label': label, 
-                'progress': progress
-            })
+            # Details label
+            details_label = tk.Label(worker_container, text="No activity", 
+                                   font=('Arial', 9), fg='#cccccc', bg='#4b4b4b')
+            details_label.pack(fill='x', padx=5, pady=2)
+            
+            # Store widget references
+            self.worker_widgets[worker_id] = {
+                'container': worker_container,
+                'status_label': status_label,
+                'progress_bar': progress_bar,
+                'details_label': details_label
+            }
+    
+    def _message_processor(self):
+        """Process messages from the command queue in a separate thread."""
+        while self.running:
+            try:
+                # Get message with timeout
+                message_type, data = self.command_queue.get(timeout=0.1)
+                
+                if message_type == "CLOSE":
+                    self.running = False
+                    break
+                elif message_type == "UPDATE_WORKER":
+                    self._update_worker_data(data)
+                elif message_type == "UPDATE_OVERALL":
+                    self._update_overall_progress(data)
+                elif message_type == "SEARCH_INFO":
+                    self._update_search_info(data)
+                    
+            except Exception:
+                continue  # Continue if queue is empty or other errors
+    
+    def _update_worker_data(self, data: Dict[str, Any]):
+        """Update worker data from message."""
+        if isinstance(data, dict):
+            worker_id = data.get('worker_id')
+            if worker_id is not None:
+                try:
+                    worker_id = int(worker_id) if isinstance(worker_id, str) else worker_id
+                    if 0 <= worker_id < self.worker_count:
+                        self.worker_data[worker_id] = data
+                except (ValueError, TypeError):
+                    pass
+    
+    def _update_overall_progress(self, data: Dict[str, Any]):
+        """Update overall progress data."""
+        if isinstance(data, dict):
+            self.overall_progress.update(data)
+    
+    def _update_search_info(self, data: Dict[str, Any]):
+        """Update search information."""
+        if isinstance(data, dict):
+            self.search_info.update(data)
+    
+    def _schedule_gui_refresh(self):
+        """Schedule GUI refresh at regular intervals."""
+        self._refresh_gui()
+        if self.running:
+            self.root.after(500, self._schedule_gui_refresh)  # Refresh every 500ms
+    
+    def _refresh_gui(self):
+        """Refresh the GUI with current data."""
+        try:
+            # Update search info labels
+            if self.search_info.get('pattern'):
+                self.pattern_label.config(text=f"Pattern: {self.search_info['pattern']}")
+            
+            if self.search_info.get('algorithm'):
+                self.algorithm_label.config(text=f"Algorithm: {self.search_info['algorithm']}")
+            
+            if self.search_info.get('chromosomes'):
+                chrom_list = self.search_info['chromosomes']
+                chrom_text = f"Chromosomes: {len(chrom_list)} total"
+                if len(chrom_list) <= 5:
+                    chrom_text += f" ({', '.join(chrom_list)})"
+                self.chromosomes_label.config(text=chrom_text)
+            
+            # Update overall progress
+            completed = self.overall_progress.get('completed', 0)
+            total = self.overall_progress.get('total', 0)
+            matches = self.overall_progress.get('matches', 0)
+            percentage = self.overall_progress.get('percentage', 0)
+            
+            self.overall_label.config(text=f"Overall Progress: {completed}/{total} ({percentage:.1f}%)")
+            self.overall_progress_bar['value'] = percentage
+            self.matches_label.config(text=f"Total Matches: {matches}")
+            
+            # Update worker widgets
+            for worker_id, widgets in self.worker_widgets.items():
+                worker_data = self.worker_data.get(worker_id, {})
+                
+                # Update status
+                status = worker_data.get('status', 'Waiting')
+                widgets['status_label'].config(text=status)
+                
+                # Update progress bar
+                progress = worker_data.get('progress', 0)
+                widgets['progress_bar']['value'] = progress
+                
+                # Update details
+                details = worker_data.get('details', 'No activity')
+                widgets['details_label'].config(text=details[:60] + "..." if len(details) > 60 else details)
+                
+                # Color coding based on status
+                if status == 'Completed':
+                    widgets['status_label'].config(fg='#00ff88')
+                    widgets['container'].config(bg='#2d5a2d')
+                elif status == 'Failed':
+                    widgets['status_label'].config(fg='#ff4444')
+                    widgets['container'].config(bg='#5a2d2d')
+                elif status == 'Processing':
+                    widgets['status_label'].config(fg='#ffaa00')
+                    widgets['container'].config(bg='#5a4d2d')
+                else:
+                    widgets['status_label'].config(fg='#888888')
+                    widgets['container'].config(bg='#4b4b4b')
+                    
+        except Exception as e:
+            print(f"[DEBUG] GUI refresh error: {e}")
+    
+    def run(self):
+        """Start the dashboard main loop."""
+        try:
+            self.root.mainloop()
+        finally:
+            self.running = False
+
+def start_dashboard(command_queue: multiprocessing.Queue, worker_count: int = 8):
+    """Start the enhanced dashboard with proper error handling."""
+    try:
+        dashboard = EnhancedWorkerDashboard(command_queue, worker_count)
+        dashboard.run()
+    except Exception as e:
+        print(f"[ERROR] Dashboard failed to start: {e}")
+
+# Keep backward compatibility
+class DashboardApp:
+    """Legacy dashboard class for backward compatibility."""
+    
+    def __init__(self, root: tk.Tk, command_queue: multiprocessing.Queue, worker_count: int):
+        self.root = root
+        self.dashboard = EnhancedWorkerDashboard(command_queue, worker_count)
+        self.dashboard.root = root  # Use the provided root
+        self.dashboard._create_widgets()  # Recreate widgets in the provided root
         
-        # Status messages area
-        status_frame = tk.Frame(self.root, bg='#2b2b2b')
-        status_frame.pack(pady=10, padx=20, fill='x')
-        
-        tk.Label(
-            status_frame, 
-            text="Status Messages:", 
-            font=('Arial', 12, 'bold'),
-            bg='#2b2b2b', fg='#ffffff'
-        ).pack(anchor='w')
-        
-        self.status_text = tk.Text(
-            status_frame, 
-            height=8, 
-            width=80,
-            bg='#404040', 
-            fg='#ffffff',
-            font=('Consolas', 9)
-        )
-        self.status_text.pack(pady=5, fill='x')
-        
-        # Scrollbar for status text
-        scrollbar = tk.Scrollbar(self.status_text)
-        scrollbar.pack(side='right', fill='y')
-        self.status_text.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.status_text.yview)
+        # Start the message processor
+        self.dashboard.update_thread = threading.Thread(target=self.dashboard._message_processor, daemon=True)
+        self.dashboard.update_thread.start()
+        self.dashboard._schedule_gui_refresh()
     
     def process_queue(self):
-        """Check the command queue for new messages and update the GUI."""
-        try:
-            while True:
-                command, data = self.command_queue.get_nowait()
-                
-                if command == "UPDATE_WORKER":
-                    worker_id, status, progress, task = data
-                    if 0 <= worker_id < len(self.worker_widgets):
-                        widget = self.worker_widgets[worker_id]
-                        widget['label'].config(text=f"Worker {worker_id+1}: [{status}] - {task}")
-                        widget['progress']['value'] = progress
-                        
-                        # Color coding based on status
-                        if status == "Completed":
-                            widget['label'].config(bg='#4CAF50', fg='#ffffff')
-                        elif status == "Processing":
-                            widget['label'].config(bg='#2196F3', fg='#ffffff')
-                        elif status == "Error":
-                            widget['label'].config(bg='#f44336', fg='#ffffff')
-                        else:
-                            widget['label'].config(bg='#404040', fg='#ffffff')
-                
-                elif command == "UPDATE_OVERALL":
-                    completed, total, found = data
-                    if total > 0:
-                        percentage = (completed / total) * 100
-                        self.overall_progress['value'] = percentage
-                        self.overall_label.config(
-                            text=f"{completed} / {total} chromosomes completed ({percentage:.1f}%)"
-                        )
-                    
-                    self.results_label.config(text=f"{found:,} results found")
-                
-                elif command == "STATUS_MESSAGE":
-                    message = data
-                    self.status_text.insert(tk.END, f"{message}\n")
-                    self.status_text.see(tk.END)
-                
-                elif command == "CLOSE":
-                    self.root.quit()
-                    return
-                    
-        except queue.Empty:
-            pass  # No new commands
-        
-        finally:
-            # Schedule next update
-            self.root.after(100, self.process_queue)
-    
-    def add_status_message(self, message: str):
-        """Add a status message to the display."""
-        self.status_text.insert(tk.END, f"{message}\n")
-        self.status_text.see(tk.END)
-
-def start_dashboard(command_queue: queue.Queue, worker_count: int):
-    """Entry point for the subprocess to run the dashboard."""
-    try:
-        # Create the main window
-        root = tk.Tk()
-        
-        # Create the dashboard app
-        dashboard = DashboardApp(root, command_queue, worker_count)
-        
-        # Add initial status message
-        dashboard.add_status_message(f"[INFO] Dashboard started with {worker_count} workers")
-        dashboard.add_status_message("[INFO] Waiting for search to begin...")
-        
-        # Start the main loop
-        root.mainloop()
-        
-    except Exception as e:
-        print(f"Dashboard Error: {e}")
-        # Try to send error back to main process
-        try:
-            command_queue.put(("STATUS_MESSAGE", f"[ERROR] Dashboard failed: {e}"))
-        except:
-            pass
-
-if __name__ == "__main__":
-    # Test the dashboard standalone
-    print("Dashboard module loaded successfully!")
-    print("This module is designed to be imported and run as a subprocess.")
+        """Legacy method - no longer needed."""
+        pass
