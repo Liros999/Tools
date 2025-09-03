@@ -3,11 +3,21 @@ from typing import List, Tuple, Optional
 from gene_coordinates import GeneData
 import os
 from tqdm import tqdm
+from tss_distance_analyzer import TSSDistanceAnalyzer
 
 class BSubAnalyzer:
     def __init__(self):
         self.sequence = ""
         self.gene_data = GeneData()
+        # Initialize TSS distance analyzer
+        try:
+            self.tss_analyzer = TSSDistanceAnalyzer()
+            self.tss_available = True
+            print("TSS distance analysis enabled.")
+        except Exception as e:
+            print(f"Warning: TSS distance analysis not available: {e}")
+            self.tss_analyzer = None
+            self.tss_available = False
         
     def load_sequence(self, filename: str) -> bool:
         """Load B. subtilis sequence from file"""
@@ -304,15 +314,28 @@ class BSubAnalyzer:
         return matches
 
     def save_results(self, results: List[Tuple[int, int, str, str, str, str, int]], filename: str):
-        """Save search results to CSV file in the results folder"""
+        """Save search results to CSV file in the results folder with TSS distance analysis"""
         results_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'results')
         os.makedirs(results_dir, exist_ok=True)
         filepath = os.path.join(results_dir, filename)
-        with open(filepath, 'w', newline='') as f:
-            f.write("Start,End,Strand,Pattern,Found_Sequence,Location,Mismatches\n")
-            for start, end, strand, pattern, found_seq, location, mismatches in results:
-                f.write(f"{start},{end},{strand},{pattern},{found_seq},{location},{mismatches}\n")
-        print(f"Results saved to {filepath}")
+        
+        # Check if TSS analysis is available
+        if self.tss_available and self.tss_analyzer:
+            # Enhanced results with TSS distance
+            with open(filepath, 'w', newline='') as f:
+                f.write("Start,End,Strand,Pattern,Found_Sequence,Location,Distance_from_TSS,Mismatches\n")
+                for start, end, strand, pattern, found_seq, location, mismatches in results:
+                    # Calculate TSS distance
+                    tss_distance = self.tss_analyzer.calculate_tss_distance_string(start, end, strand)
+                    f.write(f"{start},{end},{strand},{pattern},{found_seq},{location},{tss_distance},{mismatches}\n")
+            print(f"Results with TSS distance analysis saved to {filepath}")
+        else:
+            # Standard results without TSS analysis
+            with open(filepath, 'w', newline='') as f:
+                f.write("Start,End,Strand,Pattern,Found_Sequence,Location,Mismatches\n")
+                for start, end, strand, pattern, found_seq, location, mismatches in results:
+                    f.write(f"{start},{end},{strand},{pattern},{found_seq},{location},{mismatches}\n")
+            print(f"Results saved to {filepath} (TSS analysis not available)")
 
     def _is_match_in_gene(self, start: int, end: int) -> bool:
         """
@@ -969,11 +992,29 @@ class BSubAnalyzer:
                 # Extract just the match number from the name (e.g., "Match_1853_ydhJ-------ydhK" -> "Match_1853")
                 match_num = tgt_name.split('_')[1] if '_' in tgt_name else tgt_name
                 simple_name = f"Match_{match_num}"
-                tgt_info = f"({item['coords']}) [{item['strand']}] score={item['best_mm']} | Location: {next((t.get('orig_location') for t in targets if t['name']==item['name']), 'N/A')}"
-                print(f"\nReference: {ref_name}    Target: {simple_name} {tgt_info}")
+                # Get TSS distance if available - ONLY for header line
+                tss_distance_str = ""
+                if self.tss_available and self.tss_analyzer:
+                    try:
+                        # Extract coordinates from item['coords'] (e.g., "3443852-3443878")
+                        coord_str = item['coords']
+                        if '-' in coord_str:
+                            start_pos = int(coord_str.split('-')[0])
+                            end_pos = int(coord_str.split('-')[1])
+                            strand = item['strand']
+                            tss_distance = self.tss_analyzer.calculate_tss_distance_string(start_pos, end_pos, strand)
+                            tss_distance_str = f" | TSS: {tss_distance}"
+                    except (ValueError, AttributeError, KeyError):
+                        tss_distance_str = ""
+                
+                orig_location = next((t.get('orig_location') for t in targets if t['name']==item['name']), 'N/A')
+                tgt_info_header = f"({item['coords']}) [{item['strand']}] score={item['best_mm']} | Location: {orig_location}{tss_distance_str}"
+                tgt_info_line = f"({item['coords']}) [{item['strand']}] score={item['best_mm']} | Location: {orig_location}"
+                
+                print(f"\nReference: {ref_name}    Target: {simple_name} {tgt_info_header}")
                 stars = ''.join('*' if a == b else ' ' for a, b in zip(ref_raw, tgt_window))
                 print(f"{ref_name.ljust(name_width)}  {ref_raw}")
-                print(f"{simple_name.ljust(name_width)}  {tgt_window}  {tgt_info.ljust(info_width)}")
+                print(f"{simple_name.ljust(name_width)}  {tgt_window}  {tgt_info_line.ljust(info_width)}")
                 print(f"{'':<{name_width}}  {stars}")
         
         print("\n" + "=" * 80)
@@ -1197,22 +1238,40 @@ def main():
             except ValueError:
                 print("Invalid input. Please enter a number or 'all'.")
 
-        # Print results in table format with reduced spacing
+        # Print results in table format with TSS distance
         print("\nSearch Results:")
-        print("-" * 140)
-        if mode == "1":
-            print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<18}{'Genome Forward':<20}{'Genome RevComp':<20}{'Mismatches':<12}{'Location':<30}")
-            print("-" * 140)
-            for start, end, strand, pattern, genome_forward, genome_revcomp, location, mismatches in display_results[:display_count]:
-                print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<18}{genome_forward[:18]:<20}{genome_revcomp[:18]:<20}{str(mismatches):<12}{location[:28]:<30}")
+        if analyzer.tss_available:
+            print("-" * 180)
+            if mode == "1":
+                print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<18}{'Genome Forward':<20}{'Genome RevComp':<20}{'Distance from TSS':<25}{'Mismatches':<12}{'Location':<30}")
+                print("-" * 180)
+                for start, end, strand, pattern, genome_forward, genome_revcomp, location, mismatches in display_results[:display_count]:
+                    tss_distance = analyzer.tss_analyzer.calculate_tss_distance_string(start, end, strand)
+                    print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<18}{genome_forward[:18]:<20}{genome_revcomp[:18]:<20}{tss_distance[:23]:<25}{str(mismatches):<12}{location[:28]:<30}")
+            else:
+                print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<14}{'Found Sequence':<18}{'RevComp':<18}{'Distance from TSS':<25}{'Mismatches':<12}{'Location':<30}")
+                print("-" * 180)
+                for start, end, strand, pattern, found_seq, location, mismatches in results[:display_count]:
+                    revcomp = analyzer._reverse_complement(found_seq)
+                    tss_distance = analyzer.tss_analyzer.calculate_tss_distance_string(start, end, strand)
+                    print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<14}{found_seq[:16]:<18}{revcomp[:16]:<18}{tss_distance[:23]:<25}{str(mismatches):<12}{location[:28]:<30}")
         else:
-            print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<14}{'Found Sequence':<18}{'RevComp':<18}{'Mismatches':<12}{'Location':<35}")
-            print("-" * 145)
-            for start, end, strand, pattern, found_seq, location, mismatches in results[:display_count]:
-                revcomp = analyzer._reverse_complement(found_seq)
-                print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<14}{found_seq[:16]:<18}{revcomp[:16]:<18}{str(mismatches):<12}{location[:33]:<35}")
+            # Fallback to original display without TSS distance
+            print("-" * 140)
+            if mode == "1":
+                print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<18}{'Genome Forward':<20}{'Genome RevComp':<20}{'Mismatches':<12}{'Location':<30}")
+                print("-" * 140)
+                for start, end, strand, pattern, genome_forward, genome_revcomp, location, mismatches in display_results[:display_count]:
+                    print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<18}{genome_forward[:18]:<20}{genome_revcomp[:18]:<20}{str(mismatches):<12}{location[:28]:<30}")
+            else:
+                print(f"{'Start':<10}{'End':<10}{'Strand':<8}{'Pattern':<14}{'Found Sequence':<18}{'RevComp':<18}{'Mismatches':<12}{'Location':<35}")
+                print("-" * 145)
+                for start, end, strand, pattern, found_seq, location, mismatches in results[:display_count]:
+                    revcomp = analyzer._reverse_complement(found_seq)
+                    print(f"{str(start):<10}{str(end):<10}{strand:<8}{pattern:<14}{found_seq[:16]:<18}{revcomp[:16]:<18}{str(mismatches):<12}{location[:33]:<35}")
         
-        print("-" * 140)
+        line_width = 180 if analyzer.tss_available else 140
+        print("-" * line_width)
         print(f"Total matches shown: {len(results[:display_count])}")
         
         # Ask if user wants to save results
