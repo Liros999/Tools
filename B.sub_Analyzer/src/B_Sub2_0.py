@@ -387,7 +387,7 @@ class BSubAnalyzer:
         ]
         
         if not genes:
-            return "[start][-------][end]"
+            return "[start]---[end]"
         
         # Sort genes by start position
         genes.sort(key=lambda x: x[1])
@@ -432,20 +432,20 @@ class BSubAnalyzer:
         if upstream_gene and downstream_gene:
             if upstream_gene == 'start':
                 # Match is at the beginning of the genome
-                return f"[{upstream_gene}][-------][{downstream_gene}]"
+                return f"[{upstream_gene}]---[{downstream_gene}]"
             elif downstream_gene == 'end':
                 # Match is at the end of the genome
-                return f"[{upstream_gene}][-------][{downstream_gene}]"
+                return f"[{upstream_gene}]---[{downstream_gene}]"
             else:
                 # Match is between two genes - this is the CRITICAL CASE for CopZ-CsoR
-                return f"[{upstream_gene}][-------][{downstream_gene}]"
+                return f"[{upstream_gene}]---[{downstream_gene}]"
         else:
             # Fallback to generic intergenic reporting
             return "[intergenic_region]"
 
     def get_gene_context(self, start: int, end: int, strand: str) -> str:
         """
-        Return context string: [upstream_gene][-------][downstream_gene] based on match strand.
+        Return context string: [upstream_gene]---[downstream_gene] based on match strand.
         Only consider genes on the same strand as the match.
         """
         # Normalize strand
@@ -459,7 +459,7 @@ class BSubAnalyzer:
         ]
         
         if not genes:
-            return "[start][-------][end]"
+            return "[start]---[end]"
         
         # Sort genes by start position
         genes.sort(key=lambda x: x[1])
@@ -493,12 +493,12 @@ class BSubAnalyzer:
         up_name = upstream if upstream else 'start'
         down_name = downstream if downstream else 'end'
         
-        return f"[{up_name}][-------][{down_name}]"
+        return f"[{up_name}]---[{down_name}]"
 
     def _get_gene_context_any_strand(self, start: int, end: int) -> str:
         """
         Return context string without filtering by strand:
-        [upstream_gene][-------][downstream_gene]
+        [upstream_gene]---[downstream_gene]
         """
         genes = [
             (g, d["start"], d["end"]) 
@@ -506,7 +506,7 @@ class BSubAnalyzer:
             if d.get("start") is not None and d.get("end") is not None
         ]
         if not genes:
-            return "[start][-------][end]"
+            return "[start]---[end]"
         genes.sort(key=lambda x: x[1])
         upstream = None
         downstream = None
@@ -528,7 +528,7 @@ class BSubAnalyzer:
                     break
         up_name = upstream if upstream else 'start'
         down_name = downstream if downstream else 'end'
-        return f"[{up_name}][-------][{down_name}]"
+        return f"[{up_name}]---[{down_name}]"
 
     def _get_match_location_any_strand(self, start: int, end: int) -> str:
         """
@@ -1014,7 +1014,7 @@ class BSubAnalyzer:
                 print(f"\nReference: {ref_name}    Target: {simple_name} {tgt_info_header}")
                 stars = ''.join('*' if a == b else ' ' for a, b in zip(ref_raw, tgt_window))
                 print(f"{ref_name.ljust(name_width)}  {ref_raw}")
-                print(f"{simple_name.ljust(name_width)}  {tgt_window}  {tgt_info_line.ljust(info_width)}")
+                print(f"{simple_name.ljust(name_width)}  {tgt_window}  ({item['coords']}) [{item['strand']}] score={item['best_mm']}")
                 print(f"{'':<{name_width}}  {stars}")
         
         print("\n" + "=" * 80)
@@ -1164,9 +1164,9 @@ def main():
                 # Filter for matches between genes
                 filtered_results = []
                 for result in results:
-                    # Check if location contains "[-------]" pattern (between genes)
+                    # Check if location contains "---" pattern (between genes)
                     # AND does NOT contain "(in)" pattern (not inside genes)
-                    if "[-------]" in result[5] and "(in)" not in result[5]:
+                    if "---" in result[5] and "(in)" not in result[5]:
                         filtered_results.append(result)
                 
                 if filtered_results:

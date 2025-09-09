@@ -1,32 +1,105 @@
-# Large genome data files (won't change)
-Genome_Analyzer/data/Homo_Sapiens/GRCh38.primary_assembly.genome.fa
-Genome_Analyzer/data/E.Coli/E.Coli_K12_Seq.fasta
-Genome_Analyzer/data/B.Sub/B.subtilis_Seq.txt
-
-# Cache files
-Genome_Analyzer/src/cache/
-*.raw
-*.pkl
-*.pickle
-
-# Python cache
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# IDE files
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS files
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Log files
+# Logs
 *.log
+*.log.*
+logs/
+
+# Cache files
+.cache/
+cache/
+__pycache__/
+*.pkl
+*.pickle
+
+# Data files
+*.csv
+*.json
+*.fasta
+*.txt
+*.xlsx
+
+# API cache
+api_cache/
+static/api_cache/
+
+# Results and output
+results/
+Results/
+output/
+
+# Test files
+test_*.py
+*_test.py
 
 # Temporary files
 *.tmp
 *.temp
+*.bak
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Scientific computing
+*.mat
+*.hdf5
+*.h5
+
+# Images and plots
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.pdf

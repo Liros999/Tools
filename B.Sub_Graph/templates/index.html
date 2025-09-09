@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B. subtilis Interaction Browser</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>B. subtilis Interaction Browser</h1>
+        <p>Live SubtiWiki interactions with log2FC overlay</p>
+    </header>
+    <main>
+        <section class="controls">
+            <div class="file-block">
+                <label for="fileInput">Upload CSV/TSV (gene, log2fc, pval):</label>
+                <input type="file" id="fileInput" accept=".csv,.tsv,.txt">
+            </div>
+            <div class="columns-block" id="columnsBlock" style="display:none;">
+                <div>
+                    <label>Gene column</label>
+                    <select id="geneCol"></select>
+                </div>
+                <div>
+                    <label>log2FC column</label>
+                    <select id="log2fcCol"></select>
+                </div>
+                <div>
+                    <label>p-value column (optional)</label>
+                    <select id="pvalCol"></select>
+                </div>
+                <button id="processBtn">Process File</button>
+            </div>
+            <div class="legend" id="legend" aria-live="polite">
+                <div class="gradient" id="legendGradient"></div>
+                <div class="labels">
+                    <span id="legendMin">No data</span>
+                    <span id="legendMid">0</span>
+                    <span id="legendMax">No data</span>
+                </div>
+            </div>
+        </section>
+        <section class="status" id="status"></section>
+        <section class="graph">
+            <div id="cy"></div>
+        </section>
+    </main>
+    <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
