@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Configure Plots{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+  <h1 class="h2">Configure Plots</h1>
+</div>
+
+<form method="post" action="{{ url_for('plot_api_bp.process_plots') }}">
+  {% for file in files_data %}
+  <div class="file-config-section mb-4 border rounded p-3">
+    <h4>File: <span class="text-muted">{{ file.filename }}</span></h4>
+    <div class="plot-configs-container" id="plot-configs-{{ loop.index }}">
+      <!-- Initial Plot Configuration for this file -->
+      <div class="plot-config-card card mb-3">
+        <div class="card-header">Plot 1</div>
+        <div class="card-body">
+          <div class="row mb-3">
+            <div class="col-md-4">
+              <label for="gene_col_{{ loop.index }}_1" class="form-label">Gene Name Column</label>
+              <select class="form-select" id="gene_col_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_gene_col" required>
+                {% for column in file.columns %}<option value="{{ column }}">{{ column }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label for="x_col_{{ loop.index }}_1" class="form-label">X-Axis (Log2 Fold Change)</label>
+              <select class="form-select" id="x_col_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_x_col" required>
+                {% for column in file.columns %}<option value="{{ column }}">{{ column }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label for="y_col_{{ loop.index }}_1" class="form-label">Y-Axis (P-value)</label>
+              <select class="form-select" id="y_col_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_y_col" required>
+                {% for column in file.columns %}<option value="{{ column }}">{{ column }}</option>{% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-md-6">
+                <label for="title_{{ loop.index }}_1" class="form-label">Plot Title</label>
+                <input type="text" class="form-control" id="title_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_title" placeholder="e.g., My Volcano Plot">
+            </div>
+            <div class="col-md-3">
+                <label for="p_thresh_{{ loop.index }}_1" class="form-label">P-value Threshold</label>
+                <input type="number" step="any" class="form-control" id="p_thresh_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_p_thresh" value="0.05">
+            </div>
+            <div class="col-md-3">
+                <label for="fc_thresh_{{ loop.index }}_1" class="form-label">Log2FC Threshold</label>
+                <input type="number" step="any" class="form-control" id="fc_thresh_{{ loop.index }}_1" name="config_{{ loop.index }}_plot_1_fc_thresh" value="1">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="btn btn-secondary mb-3 add-plot-btn" data-container="plot-configs-{{ loop.index }}">Add Another Plot for this File</button>
+  </div>
+  {% endfor %}
+  <hr>
+  <button type="submit" class="btn btn-primary btn-lg" onclick="console.log('Form submission started')">Generate Plots</button>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/configure.js') }}"></script>
+{% endblock %}

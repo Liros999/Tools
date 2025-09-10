@@ -1,0 +1,28 @@
+/* Custom application styles will go here */
+
+
+
+/* Custom tooltip styles */
+.gene-tooltip {
+    position: absolute;
+    background-color: white;
+    border: 1px solid #ccc;
+    padding: 5px;
+    z-index: 1000;
+    box-shadow: 0 0 5px rgba(0,0,0,0.2);
+}
+
+#group-filter-container ul {
+    padding-left: 1rem;
+}
+
+#group-filter-container .btn-link {
+    text-decoration: none;
+    color: #212529;
+    padding: 0.25rem 0.5rem;
+}
+
+#group-filter-container .btn-link:hover {
+    background-color: #f8f9fa;
+}
+

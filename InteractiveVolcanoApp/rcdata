@@ -1,0 +1,12 @@
+warning: in the working copy of 'static/js/modules/apiService.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'static/js/modules/state.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'static/js/modules/uiManager.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'templates/analysis.html', LF will be replaced by CRLF the next time Git touches it
+src/api/selection_api.py
+src/api/selection_api_bp.py
+static/js/main.js
+static/js/modules/apiService.js
+static/js/modules/plotManager.js
+static/js/modules/state.js
+static/js/modules/uiManager.js
+templates/analysis.html

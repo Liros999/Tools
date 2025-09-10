@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Subtitle Burner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .loader {
+            border-top-color: #3498db;
+            -webkit-animation: spin 1s linear infinite;
+            animation: spin 1s linear infinite;
+        }
+        @-webkit-keyframes spin {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-8 space-y-6">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-gray-800 dark:text-white">Video Subtitle Burner</h1>
+            <p class="text-gray-500 dark:text-gray-400 mt-2">Upload your video and subtitle file to permanently embed the subtitles.</p>
+        </div>
+
+        <div class="space-y-4">
+            <div>
+                <label for="video-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">1. Upload Video File</label>
+                <div class="flex items-center justify-center w-full">
+                    <label for="video-upload" class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 dark:border-gray-600 border-dashed rounded-lg cursor-pointer bg-gray-50 dark:hover:bg-bray-800 dark:bg-gray-700 hover:bg-gray-100 dark:hover:border-gray-500 dark:hover:bg-gray-600 transition">
+                        <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                            <svg class="w-8 h-8 mb-4 text-gray-500 dark:text-gray-400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 16">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 13h3a3 3 0 0 0 0-6h-.025A5.56 5.56 0 0 0 16 6.5 5.5 5.5 0 0 0 5.5 5.5v.094c0 1.252.31 2.45 1.352 3.424"/>
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 13v6m0-6-4-4-4 4m4-4v6m-4-4H5.5"/>
+                            </svg>
+                            <p class="mb-2 text-sm text-gray-500 dark:text-gray-400"><span class="font-semibold">Click to upload video</span></p>
+                            <p id="video-file-name" class="text-xs text-gray-500 dark:text-gray-400">MP4, MOV, AVI, MKV, etc.</p>
+                        </div>
+                        <input id="video-upload" type="file" class="hidden" accept="video/*" />
+                    </label>
+                </div>
+            </div>
+             <div>
+                <label for="subtitle-upload" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">2. Upload Subtitle File</label>
+                <div class="flex items-center justify-center w-full">
+                    <label for="subtitle-upload" class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 dark:border-gray-600 border-dashed rounded-lg cursor-pointer bg-gray-50 dark:hover:bg-bray-800 dark:bg-gray-700 hover:bg-gray-100 dark:hover:border-gray-500 dark:hover:bg-gray-600 transition">
+                        <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                           <svg class="w-8 h-8 mb-4 text-gray-500 dark:text-gray-400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+                              <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v16h16V4H4Zm2 4h12M6 12h12M6 16h12"/>
+                            </svg>
+                            <p class="mb-2 text-sm text-gray-500 dark:text-gray-400"><span class="font-semibold">Click to upload subtitles</span></p>
+                            <p id="subtitle-file-name" class="text-xs text-gray-500 dark:text-gray-400">SRT, VTT, etc.</p>
+                        </div>
+                        <input id="subtitle-upload" type="file" class="hidden" accept=".srt,.vtt,.ass" />
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <button id="burn-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition disabled:bg-gray-400 dark:disabled:bg-gray-600" disabled>
+            Burn Subtitles
+        </button>
+
+        <div id="status" class="text-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg hidden">
+            <div class="flex items-center justify-center space-x-3">
+                 <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-12 w-12"></div>
+                 <div>
+                    <p id="status-message" class="text-gray-700 dark:text-gray-200 font-semibold">Preparing...</p>
+                    <p id="progress-text" class="text-sm text-gray-500 dark:text-gray-400">Please wait, this may take a while for large videos.</p>
+                 </div>
+            </div>
+        </div>
+        
+        <a id="download-link" class="w-full text-center bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg focus:outline-none focus:shadow-outline transition hidden" href="#" download="video-with-subtitles.mp4">
+            Download Your Video
+        </a>
+    </div>
+
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({
+            log: true,
+            corePath: "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+        });
+
+        const videoUpload = document.getElementById('video-upload');
+        const subtitleUpload = document.getElementById('subtitle-upload');
+        const videoFileNameEl = document.getElementById('video-file-name');
+        const subtitleFileNameEl = document.getElementById('subtitle-file-name');
+        const burnBtn = document.getElementById('burn-btn');
+        const statusEl = document.getElementById('status');
+        const statusMessage = document.getElementById('status-message');
+        const progressText = document.getElementById('progress-text');
+        const downloadLink = document.getElementById('download-link');
+
+        let videoFile = null;
+        let subtitleFile = null;
+
+        const checkFiles = () => {
+            burnBtn.disabled = !(videoFile && subtitleFile);
+        };
+
+        videoUpload.addEventListener('change', (e) => {
+            videoFile = e.target.files[0];
+            videoFileNameEl.textContent = videoFile ? videoFile.name : 'No video selected';
+            checkFiles();
+        });
+
+        subtitleUpload.addEventListener('change', (e) => {
+            subtitleFile = e.target.files[0];
+            subtitleFileNameEl.textContent = subtitleFile ? subtitleFile.name : 'No subtitle selected';
+            checkFiles();
+        });
+
+        burnBtn.addEventListener('click', async () => {
+            if (!videoFile || !subtitleFile) {
+                alert('Please upload both a video and a subtitle file.');
+                return;
+            }
+
+            burnBtn.disabled = true;
+            statusEl.classList.remove('hidden');
+            downloadLink.classList.add('hidden');
+            statusMessage.textContent = 'Loading FFmpeg...';
+            progressText.textContent = 'This might take a moment.';
+
+            if (!ffmpeg.isLoaded()) {
+                await ffmpeg.load();
+            }
+
+            statusMessage.textContent = 'Writing files to memory...';
+            const videoName = 'input.' + videoFile.name.split('.').pop();
+            const subtitleName = 'subtitle.' + subtitleFile.name.split('.').pop();
+            const outputName = 'output.mp4';
+
+            ffmpeg.FS('writeFile', videoName, await fetchFile(videoFile));
+            ffmpeg.FS('writeFile', subtitleName, await fetchFile(subtitleFile));
+            
+            ffmpeg.setProgress(({ ratio }) => {
+                statusMessage.textContent = `Processing Video... ${Math.round(ratio * 100)}%`;
+                 progressText.textContent = 'Your browser might be busy. Please wait...';
+            });
+            
+            statusMessage.textContent = 'Burning subtitles...';
+            progressText.textContent = 'This is the slowest part. Grab a coffee! ☕';
+
+            // FFmpeg command to burn subtitles while maintaining quality
+            // -c:v libx264 sets the video codec.
+            // -preset veryfast is a good balance of speed and quality. Slower presets (e.g., medium) give better quality/size.
+            // -crf 18 is a visually lossless setting for quality. Lower is better (e.g., 17), higher is worse (e.g., 23 is default).
+            // -c:a copy copies the audio stream without re-encoding, preserving quality and saving time.
+            await ffmpeg.run(
+                '-i', videoName, 
+                '-vf', `subtitles=${subtitleName}`,
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-crf', '22',
+                '-c:a', 'copy', 
+                outputName
+            );
+
+            statusMessage.textContent = 'Processing complete!';
+            progressText.textContent = 'Creating your download link.';
+
+            const data = ffmpeg.FS('readFile', outputName);
+            const videoUrl = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+
+            downloadLink.href = videoUrl;
+            downloadLink.classList.remove('hidden');
+            statusEl.classList.add('hidden');
+            
+            // Clean up files in virtual system to free memory
+            ffmpeg.FS('unlink', videoName);
+            ffmpeg.FS('unlink', subtitleName);
+            ffmpeg.FS('unlink', outputName);
+        });
+
+    </script>
+</body>
+</html>

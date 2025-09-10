@@ -1,0 +1,24 @@
+<nav class="navbar navbar-expand-lg navbar-dark sticky-top bg-dark flex-md-nowrap p-0 shadow">
+  <div class="container-fluid">
+    <a class="navbar-brand px-3" href="{{ url_for('index') }}">Interactive Volcano Plot</a>
+    
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    
+    <div class="collapse navbar-collapse" id="navbarNav">
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('data_upload_bp.upload_file') }}">
+            <i class="fas fa-upload me-1"></i>Upload Data
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('analysis') }}">
+            <i class="fas fa-chart-scatter me-1"></i>Analysis
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</nav>

@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}Analysis{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+  <h1 class="h2">Volcano Plot Analysis</h1>
+</div>
+
+<div class="row">
+  <!-- Selection Panel -->
+  <div class="col-lg-3 col-md-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <h6 class="mb-0">Multi-Panel Gene Selection</h6>
+      </div>
+      <div class="card-body d-flex flex-column">
+        <!-- Gene Search -->
+        <div class="mb-3">
+          <label for="gene-search" class="form-label small">Search Genes</label>
+          <input 
+            type="text" 
+            id="gene-search" 
+            class="form-control form-control-sm" 
+            placeholder="Type gene name..." 
+            autocomplete="off"
+          >
+          <div id="gene-search-results" class="mt-2" style="display: none; max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: white;">
+            <!-- Gene search results will appear here -->
+          </div>
+          <div id="selected-genes" class="mt-2">
+            <!-- Selected genes will appear here as tags -->
+          </div>
+          <!-- Persistent neighborhood exploration controls -->
+          <div id="neighborhood-controls" class="mt-2">
+            <label class="form-label small">Neighborhood depth: <span id="neighborhood-depth-value">1</span></label>
+            <input type="range" id="neighborhood-depth" class="form-range" min="0" max="7" value="1">
+          </div>
+        </div>
+
+        <!-- Filter Panels Tabs (Groups, Regulons, Pathways, Expression Clusters) -->
+        <div class="mb-3 flex-grow-1">
+          <ul class="nav nav-tabs nav-tabs-sm" id="filterTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="groups-tab" data-bs-toggle="tab" data-bs-target="#groups-panel" type="button" role="tab" aria-controls="groups-panel" aria-selected="true">Groups</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="regulons-tab" data-bs-toggle="tab" data-bs-target="#regulons-panel" type="button" role="tab" aria-controls="regulons-panel" aria-selected="false">Regulons</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="pathways-tab" data-bs-toggle="tab" data-bs-target="#pathways-panel" type="button" role="tab" aria-controls="pathways-panel" aria-selected="false">Pathways</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="expression-clusters-tab" data-bs-toggle="tab" data-bs-target="#expression-clusters-panel" type="button" role="tab" aria-controls="expression-clusters-panel" aria-selected="false">Expression Clusters</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="metabolites-tab" data-bs-toggle="tab" data-bs-target="#metabolites-panel" type="button" role="tab" aria-controls="metabolites-panel" aria-selected="false">Metabolites</button>
+            </li>
+            
+          </ul>
+
+          <div class="tab-content" id="filterTabsContent">
+            <!-- Groups Panel -->
+            <div class="tab-pane fade show active" id="groups-panel" role="tabpanel" aria-labelledby="groups-tab">
+              <div class="mt-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label class="form-label small mb-0">Select Groups (Tree View)</label>
+                </div>
+                <div id="group-selection-tree" class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Loading tree...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Regulons Panel -->
+            <div class="tab-pane fade" id="regulons-panel" role="tabpanel" aria-labelledby="regulons-tab">
+              <div class="mt-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label for="regulon-search" class="form-label small mb-0">Select Regulons</label>
+                  <input type="text" id="regulon-search" class="form-control form-control-sm" placeholder="Search regulons..." style="width: 60%;">
+                </div>
+                <div id="regulon-selection-list" class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Loading regulons...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pathways Panel -->
+            <div class="tab-pane fade" id="pathways-panel" role="tabpanel" aria-labelledby="pathways-tab">
+              <div class="mt-2">
+                <input id="pathway-search" type="text" class="form-control form-control-sm mb-2" placeholder="Search pathways...">
+                <div id="pathway-selection-list" class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Loading pathways...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Expression Clusters Panel -->
+            <div class="tab-pane fade" id="expression-clusters-panel" role="tabpanel" aria-labelledby="expression-clusters-tab">
+              <div class="mt-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label class="form-label small mb-0">Select Expression Clusters (Tree View)</label>
+                  <input type="text" id="expression-cluster-search" class="form-control form-control-sm" placeholder="Search clusters..." style="width: 60%;">
+                </div>
+                <div id="expression-cluster-selection-tree" class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Loading expression clusters...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Metabolites Panel -->
+            <div class="tab-pane fade" id="metabolites-panel" role="tabpanel" aria-labelledby="metabolites-tab">
+              <div class="mt-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label class="form-label small mb-0">Metabolite Categories</label>
+                </div>
+                <div id="metabolite-category-tree" class="border rounded p-2 mb-2" style="max-height: 220px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Loading metabolite categories...</div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label class="form-label small mb-0">Metabolites in Selected Category</label>
+                </div>
+                <div id="metabolite-selection-list" class="border rounded p-2" style="max-height: 220px; overflow-y: auto;">
+                  <div class="text-muted text-center p-3 small">Select a category to load metabolites...</div>
+                </div>
+              </div>
+            </div>
+
+            
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="mb-3">
+          <div class="d-grid gap-2">
+            <button type="button" id="apply-selection" class="btn btn-primary btn-sm">
+              Apply Multi-Panel Selection
+            </button>
+            <div class="row">
+              <div class="col-6">
+                <button type="button" id="clear-selection" class="btn btn-outline-secondary btn-sm w-100">
+                  Clear All
+                </button>
+              </div>
+              <div class="col-6">
+                <button type="button" id="export-genes" class="btn btn-outline-info btn-sm w-100">
+                  Export
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- (Removed legacy non-tabbed pathway/complex containers to avoid duplicate IDs) -->
+
+        <!-- Multi-Panel Selection Summary -->
+        <div id="multi-selection-summary" class="mb-3" style="display: none;">
+          <div class="card">
+            <div class="card-header">
+              <h6 class="mb-0">Multi-Panel Selection Summary</h6>
+            </div>
+            <div class="card-body p-2">
+              <div id="selection-categories" class="small"></div>
+              <div id="intersection-highlights" class="mt-2 small">
+                <strong>Intersections (Red Circles):</strong>
+                <div id="intersection-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Synonym Results -->
+        <div id="synonym-results" class="mb-3" style="display: none;">
+          <div class="card">
+            <div class="card-header">
+              <h6 class="mb-0">Synonym Analysis</h6>
+            </div>
+            <div class="card-body p-2">
+              <div id="synonym-summary" class="small"></div>
+              <div id="synonym-mappings" class="mt-2"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Selection Summary -->
+        <div id="selection-summary" class="small text-muted border-top pt-2">
+          No genes selected
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plot Panel -->
+  <div class="col-lg-9 col-md-8">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0">Interactive Volcano Plots</h6>
+        <div class="btn-group" role="group">
+          <a href="{{ url_for('data_upload_bp.upload_file') }}" class="btn btn-success btn-sm" title="Upload new data">
+            <i class="fas fa-upload me-1"></i>Upload Data
+          </a>
+          <button type="button" class="btn btn-outline-primary btn-sm" id="toggle-labels" title="Toggle gene labels">
+            <i class="fas fa-tag me-1"></i>Labels
+          </button>
+          <button type="button" class="btn btn-outline-success btn-sm" id="download-png" title="Download plot as PNG">
+            <i class="fas fa-download me-1"></i>PNG
+          </button>
+          <button type="button" class="btn btn-outline-warning btn-sm" id="reset-axes" title="Reset plot zoom">
+            <i class="fas fa-expand-arrows-alt me-1"></i>Reset
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-2">
+        <div id="plot-container" style="height: calc(100vh - 200px); overflow-y: auto;">
+          {% if plot_data %}
+            <div id="plot-loading" class="text-center">
+              <p>Rendering {{ plot_data|length }} plot(s)...</p>
+            </div>
+          {% else %}
+            <div class="text-center mt-5">
+              <div class="alert alert-warning" role="alert">
+                <h4 class="alert-heading">No Volcano Plot Data Available</h4>
+                <p class="lead">Please upload your gene expression data to create interactive volcano plots.</p>
+                <hr>
+                <a href="{{ url_for('data_upload_bp.upload_file') }}" class="btn btn-primary btn-lg">
+                  <i class="fas fa-upload me-2"></i>Upload Data Now
+                </a>
+              </div>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Threshold Configuration Modal -->
+<div 
+  class="modal fade" 
+  id="thresholdModal" 
+  tabindex="-1" 
+  aria-labelledby="thresholdModalLabel" 
+  aria-hidden="true"
+>
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="thresholdModalLabel">Configure Plot Thresholds</h5>
+        <button 
+          type="button" 
+          class="btn-close" 
+          data-bs-dismiss="modal" 
+          aria-label="Close"
+        ></button>
+      </div>
+      <div class="modal-body">
+        <div class="row">
+          <div class="col-6">
+            <label for="log2fc-threshold" class="form-label">Log2 Fold Change Threshold</label>
+            <input 
+              type="number" 
+              class="form-control" 
+              id="log2fc-threshold" 
+              value="1.0" 
+              step="0.1"
+            >
+          </div>
+          <div class="col-6">
+            <label for="pvalue-threshold" class="form-label">P-value Threshold</label>
+            <input 
+              type="number" 
+              class="form-control" 
+              id="pvalue-threshold" 
+              value="0.05" 
+              step="0.01"
+            >
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="apply-thresholds">Apply Thresholds</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Plot data injection -->
+<div id="plot-data" style="display: none;" data-plot-data='{% if plot_data %}{{ plot_data|tojson|safe }}{% else %}[]{% endif %}'></div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}" type="module"></script>
+
+<script>
+  // Get plot data from data attribute to avoid linter issues
+  (function() {
+    const plotDataElement = document.getElementById('plot-data');
+    const plotDataAttr = plotDataElement.getAttribute('data-plot-data');
+    try {
+      window.plotData = plotDataAttr ? JSON.parse(plotDataAttr) : [];
+    } catch (e) {
+      console.warn('Failed to parse plot data:', e);
+      window.plotData = [];
+    }
+  })();
+</script>
+{% endblock %}
